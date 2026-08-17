@@ -1,0 +1,9 @@
+services:
+  main:
+    image: main:latest
+    restart: no
+
+  demo:
+    image: demo:latest
+    profiles: ["demo"]
+    restart: no

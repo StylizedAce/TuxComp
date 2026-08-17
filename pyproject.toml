@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tuxcomp"
+version = "0.8.1"
+description = "Docker Compose orchestration for proot-distro on Termux"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+tuxcomp = "tuxcomp.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["tuxcomp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

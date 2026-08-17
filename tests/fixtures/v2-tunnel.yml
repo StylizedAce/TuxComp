@@ -1,0 +1,28 @@
+services:
+  relay:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: wttg
+    ports:
+      - "4040:4040"
+    environment:
+      RELAY_PORT: "4040"
+      RELAY_DATA_FILE: /srv/state/state.json
+    volumes:
+      - wttg-data:/srv/state
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4040/', timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  wttg-data:
+
+x-tuxcomp:
+  cloudflared:
+    token: "${CLOUDFLARED_TOKEN:?set CLOUDFLARED_TOKEN in .env}"
+    tunnel: wttg.socialvibes.io

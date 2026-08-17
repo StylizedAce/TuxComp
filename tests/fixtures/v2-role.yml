@@ -1,0 +1,14 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: wttg-db
+    x-tuxcomp:
+      distro: ubuntu
+      packages:
+        - mysql-server
+      role: db
+
+  redis:
+    image: redis:7-alpine
+    x-tuxcomp:
+      raw: true

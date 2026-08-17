@@ -1,0 +1,11 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: wttg-db
+    x-tuxcomp:
+      reuse: socialvibes-db
+
+  api:
+    image: app:latest
+    depends_on:
+      - db

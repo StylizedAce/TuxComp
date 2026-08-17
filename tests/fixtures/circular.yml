@@ -1,0 +1,12 @@
+services:
+  a:
+    image: a:latest
+    depends_on:
+      - b
+    restart: no
+
+  b:
+    image: b:latest
+    depends_on:
+      - a
+    restart: no

@@ -1,0 +1,6 @@
+services:
+  app:
+    image: app:latest
+    env_file:
+      - test.env
+    restart: no
