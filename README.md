@@ -56,40 +56,39 @@ tuxcomp deploy -f docker-compose.yml
 
 ## Cloudflared
 
-Expose a container to the internet via a Cloudflare tunnel. Two modes:
+Expose a container to the internet via a Cloudflare tunnel. TuxComp runs **one
+shared, host-global cloudflared instance** on the device (Termux shell, outside
+any container) that serves every exposed service — one tunnel connection, many
+public hostnames → localhost ports. The binary is installed automatically if
+missing; if a token is given it is stored at `~/.tuxcomp/tunnel-token` and used
+with `--token`. Idempotent: if cloudflared is already running it is left alone
+(never killed — other projects may rely on it), and `down` does NOT stop it.
 
-**Host mode (recommended)** — reuses the device's globally-installed cloudflared
-(registered once via `cloudflared tunnel login`) and its `~/.cloudflared` config.
-One **shared** instance serves every exposed service on the device (one tunnel
-connection, many public hostnames → localhost ports). No token in the compose:
+**Token-based tunnel** (dashboard-created tunnel):
+
+```yaml
+x-tuxcomp:
+  cloudflared:
+    token: "${CLOUDFLARED_TOKEN}"
+```
+
+**Login-based tunnel** (registered via `cloudflared tunnel login` on the device):
 
 ```yaml
 x-tuxcomp:
   cloudflared: {}
 ```
 
-Host mode is idempotent: if cloudflared is already running it is left alone
-(never killed — other projects may use the same instance), and `down` does NOT
-stop it. Manually stop with `tuxcomp stop cloudflared` or `pkill cloudflared`.
-
 Optionally name the tunnel (from `cloudflared tunnel list`):
 
 ```yaml
 x-tuxcomp:
   cloudflared:
+    token: "${CLOUDFLARED_TOKEN}"
     tunnel: my-tunnel-name
 ```
 
-**Token mode** — installs cloudflared inside a container and starts a token
-tunnel owned by that project (useful for a fresh phone with no host setup, or
-a dedicated tunnel). This one DOES stop on `down`:
-
-```yaml
-x-tuxcomp:
-  cloudflared:
-    token: "${CLOUDFLARED_TOKEN}"
-    tunnel: my-app.example.com
-```
+Manually stop the tunnel with `pkill -f '[c]loudflared tunnel run'` on the device.
 
 ## Env sync
 

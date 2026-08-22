@@ -346,76 +346,49 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
 
     if project.tuxcomp and project.tuxcomp.cloudflared:
         cf = project.tuxcomp.cloudflared
-        tunnel_container = _tunnel_container(project, ordered, active)
+        # Unified HOST-global model: ONE cloudflared instance on the device
+        # (Termux host shell, outside any container) serves every exposed
+        # project. tuxcomp ensures the binary exists, writes the token to
+        # ~/.tuxcomp/tunnel-token on the HOST, and runs a single idempotent
+        # daemon. If cloudflared is already running it is left alone.
+        steps.append(
+            Step(
+                kind="tunnel",
+                service="__tunnel__",
+                title="ensure host cloudflared binary",
+                command=_tunnel_host_ensure_command(),
+                note=(
+                    f"installs cloudflared arm64 ({CLOUDFLARED_ARM64_URL}) into "
+                    f"Termux PATH if missing; never touches containers"
+                ),
+            )
+        )
         if cf.token:
-            # Token mode: install cloudflared INSIDE the container, start with --token
             steps.append(
                 Step(
                     kind="tunnel",
                     service="__tunnel__",
-                    title="install cloudflared binary in container",
-                    command=_tunnel_install_command(tunnel_container),
+                    title="write host tunnel token",
+                    command=_tunnel_host_token_command(cf.token),
                     note=(
-                        f"downloads cloudflared arm64 ({CLOUDFLARED_ARM64_URL}) into "
-                        f"{tunnel_container}; requires curl in the container (add curl to "
-                        f"x-tuxcomp.packages if missing)"
+                        f"token stored at $HOME/.tuxcomp/tunnel-token (chmod 600) on the "
+                        f"host; shown in plan only - keep it out of git"
                     ),
                 )
             )
-            steps.append(
-                Step(
-                    kind="tunnel",
-                    service="__tunnel__",
-                    title="write tunnel token file",
-                    command=_tunnel_token_command(tunnel_container, cf.token),
-                    note=(
-                        f"token stored at /root/.tuxcomp/tunnel-token (chmod 600) inside "
-                        f"{tunnel_container}; shown in plan only - keep it out of git"
-                    ),
-                )
+        steps.append(
+            Step(
+                kind="tunnel",
+                service="__tunnel__",
+                title="start host cloudflared tunnel",
+                command=_tunnel_host_start_command(cf.tunnel),
+                note=(
+                    f"starts the shared host cloudflared daemon (idempotent, survives "
+                    f"ssh close); log at /var/log/tuxcomp/cloudflared.log"
+                    + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
+                ),
             )
-            steps.append(
-                Step(
-                    kind="tunnel",
-                    service="__tunnel__",
-                    title="start cloudflared tunnel",
-                    command=_tunnel_start_command(tunnel_container),
-                    note=(
-                        f"starts cloudflared daemon in {tunnel_container}; "
-                        f"log at /var/log/cloudflared.log"
-                        + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
-                    ),
-                )
-            )
-        else:
-            # HOST mode: reuse the device's globally-installed cloudflared and its
-            # ~/.cloudflared config, started on the host shell (outside any
-            # container). One instance serves every exposed service on the device.
-            steps.append(
-                Step(
-                    kind="tunnel",
-                    service="__tunnel__",
-                    title="check host cloudflared binary",
-                    command=_tunnel_host_check_command(),
-                    note=(
-                        "uses the cloudflared installed on the host (Termux) and its "
-                        "~/.cloudflared config - no per-container install, no token"
-                    ),
-                )
-            )
-            steps.append(
-                Step(
-                    kind="tunnel",
-                    service="__tunnel__",
-                    title="start host cloudflared tunnel",
-                    command=_tunnel_host_start_command(cf.tunnel),
-                    note=(
-                        f"starts host cloudflared daemon (survives ssh close); "
-                        f"log at /var/log/tuxcomp/cloudflared.log"
-                        + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
-                    ),
-                )
-            )
+        )
 
     return Plan(project_name=project.name, steps=steps)
 
@@ -517,45 +490,42 @@ def _hosts_command(project: Project, active: list[str], container: str) -> list[
     return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
 
 
-def _tunnel_container(project: Project, ordered: list[Service], active: list[str]) -> str:
-    for service in ordered:
-        if service.name in active:
-            return _container_name(service, project.name)
-    return active[0]
+def _tunnel_host_ensure_command() -> list[str]:
+    """Ensure a cloudflared binary exists ON THE HOST (Termux shell).
 
-
-def _tunnel_install_command(container: str) -> list[str]:
+    Prefers an already-installed binary wherever it lives; if none is found,
+    downloads the arm64 static binary into the Termux bin dir (on PATH) so it
+    becomes the device's global instance. Never touches proot containers.
+    """
     shell = (
-        f"test -x /usr/local/bin/cloudflared || "
-        f"(curl -fsSL -o /usr/local/bin/cloudflared {CLOUDFLARED_ARM64_URL} && "
-        f"chmod +x /usr/local/bin/cloudflared)"
+        f"CF_BIN=$(command -v cloudflared 2>/dev/null) || true; "
+        f"if [ -z \"$CF_BIN\" ]; then "
+        f"  for cand in \"$HOME/.local/bin/cloudflared\" \"$HOME/bin/cloudflared\" \"/usr/local/bin/cloudflared\" \"/data/data/com.termux/files/usr/bin/cloudflared\"; do "
+        f"    if [ -x \"$cand\" ]; then CF_BIN=\"$cand\"; break; fi; "
+        f"  done; "
+        f"fi; "
+        f"if [ -z \"$CF_BIN\" ]; then "
+        f"  echo 'cloudflared not found on host - installing to Termux PATH'; "
+        f"  TUX_BIN=\"${{TUXCOMP_PREFIX:-/data/data/com.termux/files/usr}}/bin\"; "
+        f"  mkdir -p \"$TUX_BIN\" && "
+        f"  curl -fsSL -o \"$TUX_BIN/cloudflared\" {CLOUDFLARED_ARM64_URL} && "
+        f"  chmod +x \"$TUX_BIN/cloudflared\" && "
+        f"  echo 'installed cloudflared to '\"$TUX_BIN/cloudflared\" || "
+        f"  {{ echo 'error: failed to install cloudflared on host' >&2; exit 1; }}; "
+        f"else "
+        f"  echo \"host cloudflared found: $CF_BIN\"; "
+        f"fi"
     )
-    return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
+    return ["/bin/sh", "-c", shell]
 
 
-def _tunnel_token_command(container: str, token: str) -> list[str]:
+def _tunnel_host_token_command(token: str) -> list[str]:
+    """Write the tunnel token on the HOST (~/.tuxcomp/tunnel-token)."""
     shell = (
-        f"mkdir -p /root/.tuxcomp && "
-        f"printf '%s' '{token}' > /root/.tuxcomp/tunnel-token && "
-        f"chmod 600 /root/.tuxcomp/tunnel-token && "
-        f"cat > /root/.tuxcomp/start-tunnel.sh <<'EOF'\n"
-        f"#!/bin/sh\n"
-        f"pkill -f '[c]loudflared tunnel run' 2>/dev/null\n"
-        f"nohup cloudflared tunnel run --token \"$(cat /root/.tuxcomp/tunnel-token)\" "
-        f"> /var/log/cloudflared.log 2>&1 &\n"
-        f"disown\n"
-        f"EOF\n"
-        f"chmod +x /root/.tuxcomp/start-tunnel.sh"
-    )
-    return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
-
-
-def _tunnel_host_check_command() -> list[str]:
-    """Host mode: verify the globally-installed cloudflared exists (no proot)."""
-    shell = (
-        f"command -v cloudflared >/dev/null 2>&1 || "
-        f"{{ echo 'error: cloudflared not found on host - install it first "
-        f"(https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/ or pkg install cloudflared)' >&2; exit 1; }}"
+        f"mkdir -p \"$HOME/.tuxcomp\" && "
+        f"printf '%s' '{token}' > \"$HOME/.tuxcomp/tunnel-token\" && "
+        f"chmod 600 \"$HOME/.tuxcomp/tunnel-token\" && "
+        f"echo 'token written to $HOME/.tuxcomp/tunnel-token'"
     )
     return ["/bin/sh", "-c", shell]
 
@@ -563,12 +533,11 @@ def _tunnel_host_check_command() -> list[str]:
 def _tunnel_host_start_command(tunnel: str | None) -> list[str]:
     """Host mode: ensure the device's GLOBAL cloudflared is running.
 
-    The host cloudflared is shared across every exposed service on the device
-    (one process, one tunnel connection, many public hostnames → localhost
-    ports). It is idempotent: if an instance is already running it is left
-    alone (never killed - that would drop other projects' tunnels). `down`
-    does NOT stop it either, for the same reason; `tuxcomp stop cloudflared`
-    is the manual escape hatch.
+    One shared instance serves every exposed service on the device. Idempotent:
+    if cloudflared is already running it is left alone (never killed - that
+    would drop other projects' tunnels). Uses the token at
+    $HOME/.tuxcomp/tunnel-token if present, otherwise cloudflared's own config
+    (~/.cloudflared). `down` does NOT stop it.
     """
     name_part = f" {_q_sh(tunnel)}" if tunnel else ""
     shell = (
@@ -576,15 +545,17 @@ def _tunnel_host_start_command(tunnel: str | None) -> list[str]:
         f"echo 'host cloudflared already running - leaving it alone'; "
         f"else "
         f"mkdir -p /var/log/tuxcomp && "
-        f"nohup cloudflared tunnel run{name_part} > /var/log/tuxcomp/cloudflared.log 2>&1 & "
+        f"if [ -f \"$HOME/.tuxcomp/tunnel-token\" ]; then "
+        f"  nohup cloudflared tunnel run --token \"$(cat \"$HOME/.tuxcomp/tunnel-token\")\"{name_part} "
+        f"> /var/log/tuxcomp/cloudflared.log 2>&1 & "
+        f"else "
+        f"  nohup cloudflared tunnel run{name_part} "
+        f"> /var/log/tuxcomp/cloudflared.log 2>&1 & "
+        f"fi; "
         f"disown; echo 'host cloudflared started (log: /var/log/tuxcomp/cloudflared.log)'; "
         f"fi"
     )
     return ["/bin/sh", "-c", shell]
-
-
-def _tunnel_start_command(container: str) -> list[str]:
-    return ["proot-distro", "login", container, "-d", "--", "/bin/sh", "/root/.tuxcomp/start-tunnel.sh"]
 
 
 def _start_note(service: Service) -> str:
@@ -649,37 +620,18 @@ def down_plan(project: Project, active: set[str] | None = None, remove: bool = F
                 )
             )
     if project.tuxcomp and project.tuxcomp.cloudflared:
-        cf = project.tuxcomp.cloudflared
-        tunnel_container = _tunnel_container(project, ordered, list(active))
-        if cf.token:
-            # Token mode: the tunnel is owned by this project's container - stop it.
-            steps.append(
-                Step(
-                    kind="tunnel",
-                    service="__tunnel__",
-                    title="stop cloudflared tunnel",
-                    command=[
-                        "proot-distro",
-                        "login",
-                        tunnel_container,
-                        "--",
-                        "/bin/sh",
-                        "-c",
-                        "pkill -f '[c]loudflared tunnel run' 2>/dev/null; echo 'cloudflared stopped'",
-                    ],
-                )
+        # The tunnel daemon (host or container token) is SHARED across projects
+        # on this device - one instance serves every exposed API. `down` stops
+        # only this project's containers; the tunnel stays up so other projects
+        # keep working. Stop it manually with `tuxcomp stop <container>` +
+        # `pkill -f cloudflared`, or on the host shell.
+        steps.append(
+            Step(
+                kind="note",
+                service="__tunnel__",
+                title="leave shared cloudflared running",
+                command=[],
+                note="cloudflared is shared across projects on this device - it stays up after down (stop manually with pkill -f '[c]loudflared tunnel run')",
             )
-        else:
-            # Host mode: the cloudflared is SHARED across every exposed service on
-            # the device. down stops only this project's containers - the tunnel
-            # stays up so other projects keep working.
-            steps.append(
-                Step(
-                    kind="note",
-                    service="__tunnel__",
-                    title="leave shared host cloudflared running",
-                    command=[],
-                    note="host cloudflared is shared across projects - it stays up (stop manually with `tuxcomp stop cloudflared`)",
-                )
-            )
+        )
     return Plan(project_name=project.name, steps=steps)

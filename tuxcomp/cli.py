@@ -495,11 +495,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
                 "start": service_start_command(project, service, container, detach=True),
                 "health": _health_command(project, service, container),
                 "tunnel": bool(project.tuxcomp and project.tuxcomp.cloudflared),
-                "tunnel_mode": (
-                    "host"
-                    if (project.tuxcomp and project.tuxcomp.cloudflared and not project.tuxcomp.cloudflared.token)
-                    else "container"
-                ),
+                "tunnel_mode": "host",
                 "tunnel_name": (
                     project.tuxcomp.cloudflared.tunnel
                     if (project.tuxcomp and project.tuxcomp.cloudflared and project.tuxcomp.cloudflared.tunnel)
@@ -781,30 +777,24 @@ def _cmd_start(args: argparse.Namespace) -> int:
             return 1
 
     if entry.get("tunnel"):
-        if entry.get("tunnel_mode") == "host":
-            # Host mode: ensure the shared global cloudflared is running (never
-            # kill it - other projects may rely on the same instance).
-            tunnel = entry.get("tunnel_name")
-            name_part = f" {shlex.quote(tunnel)}" if tunnel else ""
-            tunnel_cmd = ["/bin/sh", "-c", (
-                "if pgrep -f '[c]loudflared tunnel run' >/dev/null; then "
-                "echo 'host cloudflared already running - leaving it alone'; "
-                "else "
-                "mkdir -p /var/log/tuxcomp && "
-                f"nohup cloudflared tunnel run{name_part} > /var/log/tuxcomp/cloudflared.log 2>&1 & disown; "
-                "echo 'host cloudflared started'; "
-                "fi"
-            )]
-        else:
-            tunnel_cmd = [
-                _proot(),
-                "login",
-                args.container,
-                "-d",
-                "--",
-                "/bin/sh",
-                "/root/.tuxcomp/start-tunnel.sh",
-            ]
+        # Unified host-global model: ensure the shared device cloudflared is
+        # running (never kill it - other projects may rely on the same
+        # instance). Uses ~/.tuxcomp/tunnel-token if present.
+        tunnel = entry.get("tunnel_name")
+        name_part = f" {shlex.quote(tunnel)}" if tunnel else ""
+        tunnel_cmd = ["/bin/sh", "-c", (
+            "if pgrep -f '[c]loudflared tunnel run' >/dev/null; then "
+            "echo 'host cloudflared already running - leaving it alone'; "
+            "else "
+            "mkdir -p /var/log/tuxcomp && "
+            "if [ -f \"$HOME/.tuxcomp/tunnel-token\" ]; then "
+            f"nohup cloudflared tunnel run --token \"$(cat \"$HOME/.tuxcomp/tunnel-token\")\"{name_part} > /var/log/tuxcomp/cloudflared.log 2>&1 & disown; "
+            "else "
+            f"nohup cloudflared tunnel run{name_part} > /var/log/tuxcomp/cloudflared.log 2>&1 & disown; "
+            "fi; "
+            "echo 'host cloudflared started'; "
+            "fi"
+        )]
         try:
             subprocess.run(tunnel_cmd, capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.TimeoutExpired) as exc:
