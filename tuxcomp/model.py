@@ -50,7 +50,7 @@ class ServiceTuxComp:
 
 @dataclass
 class CloudflaredConfig:
-    token: str
+    token: Optional[str] = None
     tunnel: Optional[str] = None
 
 

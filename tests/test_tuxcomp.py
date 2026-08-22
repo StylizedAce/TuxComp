@@ -642,6 +642,7 @@ def test_deploy_no_config(tmp_path, monkeypatch, capsys):
 def test_deploy_sequence(tmp_path, monkeypatch, capsys):
     import subprocess as sp
 
+    from tuxcomp import __version__
     from tuxcomp.cli import _cmd_deploy, _parse_args
 
     (tmp_path / "compose.yml").write_text(
@@ -666,7 +667,12 @@ def test_deploy_sequence(tmp_path, monkeypatch, capsys):
         calls.append(cmd)
         return 0
 
+    def fake_ssh_out(host, port, cmd, timeout=30):
+        # Simulate an already-up-to-date target so no upgrade SSH call happens.
+        return f"tuxcomp {__version__}"
+
     monkeypatch.setattr(sp, "call", fake_call)
+    monkeypatch.setattr("tuxcomp.cli._ssh_out", fake_ssh_out)
     monkeypatch.chdir(tmp_path)
     args = _parse_args(["deploy", "-f", "compose.yml"])
     assert _cmd_deploy(args) == 0
@@ -676,6 +682,48 @@ def test_deploy_sequence(tmp_path, monkeypatch, capsys):
     assert calls[2][0] == "ssh" and "mkdir -p" in calls[2][-1]
     assert calls[3][0] == "scp" and "-r" in calls[3]
     assert calls[4][0] == "ssh" and "tuxcomp up" in calls[4][-1]
+
+
+def test_deploy_upgrades_outdated_tuxcomp(tmp_path, monkeypatch, capsys):
+    """Deploy should pip-install the latest tuxcomp when the target is older."""
+    import subprocess as sp
+
+    from tuxcomp.cli import _cmd_deploy, _parse_args
+
+    (tmp_path / "compose.yml").write_text(
+        'services:\n'
+        '  app:\n'
+        '    image: app:latest\n'
+        'x-tuxcomp:\n'
+        '  deploy:\n'
+        '    host: root@192.168.1.153\n'
+        '    port: 8022\n'
+        '    remote_dir: ~/upload-tool\n'
+        '    sync:\n'
+        '      - dist/browser\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "browser").mkdir()
+
+    calls: list[list[str]] = []
+
+    def fake_call(cmd, **kwargs):
+        calls.append(cmd)
+        return 0
+
+    def fake_ssh_out(host, port, cmd, timeout=30):
+        # Simulate an outdated target: version is old, so upgrade runs.
+        return "tuxcomp 0.1.0"
+
+    monkeypatch.setattr(sp, "call", fake_call)
+    monkeypatch.setattr("tuxcomp.cli._ssh_out", fake_ssh_out)
+    monkeypatch.chdir(tmp_path)
+    args = _parse_args(["deploy", "-f", "compose.yml"])
+    assert _cmd_deploy(args) == 0
+    # First SSH call is the pip upgrade, not mkdir.
+    assert calls[0][0] == "ssh" and "pip install --upgrade" in calls[0][-1]
+    assert calls[1][0] == "ssh" and "mkdir -p" in calls[1][-1]
 
 
 def test_remote_add_list_default(tmp_path, monkeypatch, capsys):
@@ -898,6 +946,28 @@ def test_dockerfile_fix_does_not_merge_exec_form(tmp_path):
     new, notes = preprocess_dockerfile(text)
     # exec-form RUNs cannot be joined with && - both stay separate
     assert new.count("RUN /bin/sh -c") == 2
+
+
+def test_dockerfile_fix_multiline_apt_continuation(tmp_path):
+    """Merged multiline RUNs must not leak a trailing backslash (\\ gcc bug)."""
+    from tuxcomp.dockerfile_fix import preprocess_dockerfile
+
+    text = (
+        "FROM python:3.13-slim\n"
+        "RUN apt-get update && apt-get install -y --no-install-recommends \\\n"
+        "    gcc \\\n"
+        "    libmariadb-dev \\\n"
+        "    pkg-config \\\n"
+        "    && rm -rf /var/lib/apt/lists/*\n"
+        "RUN pip install -r requirements.txt\n"
+    )
+    new, notes = preprocess_dockerfile(text)
+    assert "\\ gcc" not in new
+    assert "\\\n    libmariadb" not in new
+    assert "gcc" in new and "libmariadb-dev" in new and "pkg-config" in new
+    # merged into one RUN (apt + pip), no stray backslashes
+    assert new.count("RUN ") == 1
+    assert "&& pip install" in new
 
 
 def test_port_conflict_same_project_duplicate(tmp_path, monkeypatch, capsys):

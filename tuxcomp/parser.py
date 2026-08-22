@@ -221,11 +221,13 @@ def _parse_tuxcomp_project(raw: dict) -> ProjectTuxComp | None:
         return None
     cloudflared = ext.get("cloudflared") or {}
     cf = None
-    if isinstance(cloudflared, dict) and cloudflared.get("token"):
+    if isinstance(cloudflared, dict):
         cf = CloudflaredConfig(
-            token=str(cloudflared["token"]),
+            token=str(cloudflared["token"]) if cloudflared.get("token") else None,
             tunnel=str(cloudflared["tunnel"]) if cloudflared.get("tunnel") else None,
         )
+    elif cloudflared is True:
+        cf = CloudflaredConfig()
     deploy = ext.get("deploy") or {}
     dp = None
     if isinstance(deploy, dict) and deploy:

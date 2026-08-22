@@ -360,18 +360,34 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                 ),
             )
         )
-        steps.append(
-            Step(
-                kind="tunnel",
-                service="__tunnel__",
-                title="write tunnel token file",
-                command=_tunnel_token_command(tunnel_container, cf.token),
-                note=(
-                    f"token stored at /root/.tuxcomp/tunnel-token (chmod 600) inside "
-                    f"{tunnel_container}; shown in plan only - keep it out of git"
-                ),
+        if cf.token:
+            # Token mode: write token + start with --token
+            steps.append(
+                Step(
+                    kind="tunnel",
+                    service="__tunnel__",
+                    title="write tunnel token file",
+                    command=_tunnel_token_command(tunnel_container, cf.token),
+                    note=(
+                        f"token stored at /root/.tuxcomp/tunnel-token (chmod 600) inside "
+                        f"{tunnel_container}; shown in plan only - keep it out of git"
+                    ),
+                )
             )
-        )
+        else:
+            # Daemon mode: just ensure cloudflared binary exists, start with existing config
+            steps.append(
+                Step(
+                    kind="tunnel",
+                    service="__tunnel__",
+                    title="ensure cloudflared tunnel config",
+                    command=_tunnel_daemon_command(tunnel_container),
+                    note=(
+                        f"ensures cloudflared binary and start script exist in "
+                        f"{tunnel_container}; uses existing phone config (no token needed)"
+                    ),
+                )
+            )
         steps.append(
             Step(
                 kind="tunnel",
@@ -379,7 +395,7 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                 title="start cloudflared tunnel",
                 command=_tunnel_start_command(tunnel_container),
                 note=(
-                    f"restarts cloudflared in {tunnel_container} detached; "
+                    f"starts cloudflared daemon in {tunnel_container}; "
                     f"log at /var/log/cloudflared.log"
                     + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
                 ),
@@ -510,8 +526,25 @@ def _tunnel_token_command(container: str, token: str) -> list[str]:
         f"cat > /root/.tuxcomp/start-tunnel.sh <<'EOF'\n"
         f"#!/bin/sh\n"
         f"pkill -f '[c]loudflared tunnel run' 2>/dev/null\n"
-        f"cloudflared tunnel run --token \"$(cat /root/.tuxcomp/tunnel-token)\" "
-        f"> /var/log/cloudflared.log 2>&1\n"
+        f"nohup cloudflared tunnel run --token \"$(cat /root/.tuxcomp/tunnel-token)\" "
+        f"> /var/log/cloudflared.log 2>&1 &\n"
+        f"disown\n"
+        f"EOF\n"
+        f"chmod +x /root/.tuxcomp/start-tunnel.sh"
+    )
+    return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
+
+
+def _tunnel_daemon_command(container: str) -> list[str]:
+    """Ensure cloudflared start script exists using existing phone config (no token)."""
+    shell = (
+        f"mkdir -p /root/.tuxcomp /var/log && "
+        f"cat > /root/.tuxcomp/start-tunnel.sh <<'EOF'\n"
+        f"#!/bin/sh\n"
+        f"pkill -f '[c]loudflared tunnel run' 2>/dev/null\n"
+        f"nohup cloudflared tunnel run "
+        f"> /var/log/cloudflared.log 2>&1 &\n"
+        f"disown\n"
         f"EOF\n"
         f"chmod +x /root/.tuxcomp/start-tunnel.sh"
     )

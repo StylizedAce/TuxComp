@@ -82,8 +82,9 @@ def _run_body(block: str) -> str | None:
     if body.startswith("["):
         return None  # exec form - cannot merge with &&
     if rest:
-        # collapse backslash-continuations into a single line
-        body = body + " " + rest.replace("\\\n", " ").strip()
+        # collapse backslash-continuations into a single line; a trailing
+        # backslash on the FIRST line is a continuation marker too, drop it
+        body = body.rstrip("\\") + " " + rest.replace("\\\n", " ").strip()
     return body
 
 

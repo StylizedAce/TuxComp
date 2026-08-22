@@ -1016,6 +1016,16 @@ def _ssh(host: str, port: int, cmd: str) -> int:
         return 1
 
 
+def _ssh_out(host: str, port: int, cmd: str, timeout: int = 30) -> str:
+    """Run a remote command and return its stdout (empty string on failure)."""
+    full = ["ssh", "-q", "-o", "ConnectTimeout=10", "-p", str(port), host, cmd]
+    try:
+        proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
+        return proc.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
 def _prefetch_wheels(project, deploy) -> int:
     """Download aarch64 wheels for the project's requirements into wheels/.
 
@@ -1092,6 +1102,24 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     host, port = target
 
     print(f"deploy {project.name} -> {host}:{port}")
+
+    # 0. self-upgrade tuxcomp on the target so the phone always runs the
+    #    latest tooling before any service is pushed.
+    remote_version = _ssh_out(host, port, "tuxcomp --version 2>/dev/null || echo none")
+    if remote_version and remote_version != f"tuxcomp {__version__}":
+        print(f"  → older tuxcomp on target ({remote_version}); upgrading to tuxcomp {__version__}")
+        if _ssh(host, port, "pip install --upgrade git+https://github.com/StylizedAce/TuxComp.git") != 0:
+            print("error: could not upgrade tuxcomp on target", file=sys.stderr)
+            return 1
+        print(f"  → tuxcomp upgraded on target ({host})")
+    elif not remote_version:
+        print(f"  → tuxcomp not found on target; installing tuxcomp {__version__}")
+        if _ssh(host, port, "pip install git+https://github.com/StylizedAce/TuxComp.git") != 0:
+            print("error: could not install tuxcomp on target", file=sys.stderr)
+            return 1
+        print(f"  → tuxcomp installed on target ({host})")
+    else:
+        print(f"  → tuxcomp on target already up to date ({remote_version})")
 
     # 1. build locally (guarantees the pushed dist is fresh)
     if deploy.build:
