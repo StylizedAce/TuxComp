@@ -225,6 +225,7 @@ def _parse_tuxcomp_project(raw: dict) -> ProjectTuxComp | None:
         cf = CloudflaredConfig(
             token=str(cloudflared["token"]) if cloudflared.get("token") else None,
             tunnel=str(cloudflared["tunnel"]) if cloudflared.get("tunnel") else None,
+            container=str(cloudflared["container"]) if cloudflared.get("container") else "tuxcomp-cloudflared",
         )
     elif cloudflared is True:
         cf = CloudflaredConfig()

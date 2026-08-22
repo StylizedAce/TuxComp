@@ -44,7 +44,9 @@ tuxcomp deploy -f docker-compose.yml
 | Command | Description |
 |---|---|
 | `tuxcomp up -f compose.yml` | Provision + start services |
+| `tuxcomp up a b c` / `tuxcomp up --all` | Start registered containers from saved config |
 | `tuxcomp down -f compose.yml` | Stop services (keeps state) |
+| `tuxcomp down a b c` / `tuxcomp down --all` | Stop registered containers (--all includes tunnels) |
 | `tuxcomp start <container>` | Restart a container from its saved config |
 | `tuxcomp stop <container>` | Stop a container |
 | `tuxcomp ps -f compose.yml` | List running services |
@@ -53,42 +55,48 @@ tuxcomp deploy -f docker-compose.yml
 | `tuxcomp rebuild <container>` | Stop + remove + re-up with new code |
 | `tuxcomp deploy -f compose.yml` | Upgrade tuxcomp on target, push files, start stack |
 | `tuxcomp plan -f compose.yml` | Print what would run, without running it |
+| `tuxcomp completion` | Print bash/zsh completion script (tab-completes container names) |
 
 ## Cloudflared
 
-Expose a container to the internet via a Cloudflare tunnel. TuxComp runs **one
-shared, host-global cloudflared instance** on the device (Termux shell, outside
-any container) that serves every exposed service — one tunnel connection, many
-public hostnames → localhost ports. The binary is installed automatically if
-missing; if a token is given it is stored at `~/.tuxcomp/tunnel-token` and used
-with `--token`. Idempotent: if cloudflared is already running it is left alone
-(never killed — other projects may rely on it), and `down` does NOT stop it.
+Expose containers to the internet via Cloudflare tunnels. Each tunnel runs in
+**one shared, named proot container** that every project on the device can use.
+(Proot is required on Android: `/etc/resolv.conf` is read-only on the host, so
+cloudflared's Go DNS resolver fails there — inside proot it works.)
 
-**Token-based tunnel** (dashboard-created tunnel):
+**Owning a tunnel** (provides the token; creates/ensures the container):
 
 ```yaml
 x-tuxcomp:
   cloudflared:
+    container: tuxcomp-cloudflared     # optional; default tuxcomp-cloudflared
     token: "${CLOUDFLARED_TOKEN}"
 ```
 
-**Login-based tunnel** (registered via `cloudflared tunnel login` on the device):
+The token is always overwritten on deploy (last owner wins). You can run
+**multiple tunnels** (different accounts) side by side with different names.
 
-```yaml
-x-tuxcomp:
-  cloudflared: {}
-```
-
-Optionally name the tunnel (from `cloudflared tunnel list`):
+**Using a tunnel without owning it** (auto-ensure it's running, no token):
 
 ```yaml
 x-tuxcomp:
   cloudflared:
-    token: "${CLOUDFLARED_TOKEN}"
-    tunnel: my-tunnel-name
+    container: tuxcomp-cloudflared     # ensure this tunnel is up
 ```
 
-Manually stop the tunnel with `pkill -f '[c]loudflared tunnel run'` on the device.
+**Plain port exposure** — most projects need nothing at all: expose a port and
+add a route in the Cloudflare dashboard (`lt.your-domain.com → localhost:8090`):
+
+```yaml
+services:
+  api:
+    ports: ["8090:8090"]
+```
+
+`down` never stops tunnel containers (they're shared); stop one explicitly:
+`tuxcomp down tuxcomp-cloudflared`. `tuxcomp up <name>` reconnects it in
+seconds. Replace a tunnel entirely: `tuxcomp rmi tuxcomp-cloudflared` then
+re-deploy with the new token.
 
 ## Env sync
 

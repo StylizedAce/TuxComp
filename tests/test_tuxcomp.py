@@ -171,17 +171,41 @@ def test_plan_cloudflared(monkeypatch):
     project = parse_compose_file(FIXTURES / "v2-tunnel.yml")
     plan = build_plan(project)
     tunnel = [s for s in plan.steps if s.kind == "tunnel"]
-    assert len(tunnel) == 3  # install binary, write token, start daemon
+    # ensure container (install), install binary, write token, start daemon
+    assert len(tunnel) == 3
     assert any("cloudflared" in s.command[-1] for s in tunnel)
     assert any("tunnel-token" in s.command[-1] for s in tunnel)
     assert any("cloudflared tunnel run" in s.command[-1] for s in tunnel)
+    # The shared container has the fixed default name and a health step exists.
+    assert any("tuxcomp-cloudflared" in s.title for s in plan.steps)
+    assert any(s.kind == "health" and "cloudflared" in s.title for s in plan.steps)
     # Per-project container runs via proot (DNS works inside proot on Android)
     assert any("proot-distro" in s.command for s in tunnel)
     down = down_plan(project)
-    # down kills the project's cloudflared container
-    down_tunnel = [s for s in down.steps if s.kind == "tunnel"]
-    assert len(down_tunnel) == 1
-    assert "cloudflared" in down_tunnel[0].command[-1]
+    # down does NOT stop the shared tunnel container - it serves other projects.
+    assert not any(s.kind == "tunnel" for s in down.steps)
+
+
+def test_plan_cloudflared_named_container(monkeypatch):
+    """cloudflared: { container: X, token: ... } uses the named container."""
+    import tempfile
+
+    monkeypatch.setenv("CLOUDFLARED_TOKEN", "test-token-123")
+    with tempfile.TemporaryDirectory() as d:
+        (Path(d) / "compose.yml").write_text(
+            'services:\n'
+            '  app:\n'
+            '    image: app:latest\n'
+            'x-tuxcomp:\n'
+            '  cloudflared:\n'
+            '    container: my-tunnel\n'
+            '    token: "${CLOUDFLARED_TOKEN}"\n',
+            encoding="utf-8",
+        )
+        project = parse_compose_file(Path(d) / "compose.yml")
+        plan = build_plan(project)
+        assert any("my-tunnel" in s.title for s in plan.steps)
+        assert not any("tuxcomp-cloudflared" in s.title for s in plan.steps)
 
 
 def test_plan_build_service():
@@ -807,6 +831,67 @@ def test_remote_remove_and_set_default(tmp_path, monkeypatch, capsys):
     args = _parse_args(["remote", "remove", "ghost"])
     assert _cmd_remote(args) == 1
     assert "no remote 'ghost'" in capsys.readouterr().err
+
+
+def test_down_multiple_containers(tmp_path, monkeypatch, capsys):
+    """tuxcomp down a b c stops each registered container."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    import subprocess as sp
+
+    from tuxcomp.cli import _cmd_down, _parse_args
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("P", (), {"returncode": 0})()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    registry = Path(tmp_path) / ".tuxcomp" / "registry"
+    registry.mkdir(parents=True)
+    (registry / "lt-api.json").write_text('{"container": "lt-api"}', encoding="utf-8")
+    (registry / "lt-redis.json").write_text('{"container": "lt-redis"}', encoding="utf-8")
+
+    args = _parse_args(["down", "lt-api", "lt-redis"])
+    assert _cmd_down(args) == 0
+    kills = [c for c in calls if c[0] == "proot-distro" and c[1] == "kill"]
+    assert len(kills) == 2
+
+
+def test_down_all(tmp_path, monkeypatch, capsys):
+    """tuxcomp down --all stops every registered container."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    import subprocess as sp
+
+    from tuxcomp.cli import _cmd_down, _parse_args
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("P", (), {"returncode": 0})()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    registry = Path(tmp_path) / ".tuxcomp" / "registry"
+    registry.mkdir(parents=True)
+    for name in ("lt-api", "lt-redis", "tuxcomp-cloudflared"):
+        (registry / f"{name}.json").write_text(f'{{"container": "{name}"}}', encoding="utf-8")
+
+    args = _parse_args(["down", "--all"])
+    assert _cmd_down(args) == 0
+    kills = [c for c in calls if c[0] == "proot-distro" and c[1] == "kill"]
+    assert len(kills) == 3
+
+
+def test_completion_output(tmp_path, monkeypatch, capsys):
+    """tuxcomp completion prints a script containing subcommands."""
+    from tuxcomp.cli import _cmd_completion, _parse_args
+
+    args = _parse_args(["completion"])
+    assert _cmd_completion(args) == 0
+    out = capsys.readouterr().out
+    assert "tuxcomp" in out
+    assert "complete" in out
 
 
 def test_deploy_uses_default_remote(tmp_path, monkeypatch, capsys):

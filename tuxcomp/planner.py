@@ -346,18 +346,27 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
 
     if project.tuxcomp and project.tuxcomp.cloudflared:
         cf = project.tuxcomp.cloudflared
-        # Shared proot container approach: one cloudflared instance in a single
-        # proot container serves every exposed service on the device. Android's
-        # /etc/resolv.conf is read-only, so Go's DNS resolver (used by
-        # cloudflared) fails on the Termux host shell. Inside a proot container,
-        # /etc/resolv.conf is writable and DNS works. Idempotent: if cloudflared
-        # is already running inside the container, it is left alone.
-        tunnel_container = f"cloudflared-{project.name}"
+        tunnel_container = cf.container or "tuxcomp-cloudflared"
+        # Shared, named proot container: one cloudflared instance per tunnel
+        # serves every exposed service on the device. Android's /etc/resolv.conf
+        # is read-only, so Go's DNS resolver (used by cloudflared) fails on the
+        # Termux host shell; inside a proot container DNS works. Named
+        # containers allow multiple tunnels (different accounts) side by side.
+        # The runner skips the install step when the container already exists.
+        steps.append(
+            Step(
+                kind="install",
+                service="__tunnel__",
+                title=f"ensure proot container {tunnel_container}",
+                command=["proot-distro", "install", "debian", "-n", tunnel_container],
+                note="shared cloudflared container - created once, reused by every project",
+            )
+        )
         steps.append(
             Step(
                 kind="tunnel",
                 service="__tunnel__",
-                title=f"install cloudflared in {tunnel_container}",
+                title=f"install cloudflared binary in {tunnel_container}",
                 command=_tunnel_install_command(tunnel_container),
                 note=(
                     f"downloads cloudflared arm64 ({CLOUDFLARED_ARM64_URL}) into "
@@ -366,6 +375,7 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
             )
         )
         if cf.token:
+            # Owning project: always overwrite the token (last deploy wins).
             steps.append(
                 Step(
                     kind="tunnel",
@@ -374,7 +384,7 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                     command=_tunnel_token_command(tunnel_container, cf.token),
                     note=(
                         f"token stored at /root/.tuxcomp/tunnel-token (chmod 600) inside "
-                        f"{tunnel_container}; shown in plan only - keep it out of git"
+                        f"{tunnel_container}; always overwritten on deploy"
                     ),
                 )
             )
@@ -389,6 +399,18 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                     f"proot -d); log at /root/.tuxcomp/cloudflared.log inside "
                     f"{tunnel_container}"
                     + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
+                ),
+            )
+        )
+        steps.append(
+            Step(
+                kind="health",
+                service="__tunnel__",
+                title=f"wait for cloudflared health in {tunnel_container}",
+                command=_tunnel_health_command(tunnel_container),
+                note=(
+                    "polls the cloudflared process inside the container; "
+                    "Ctrl+C skips without undoing anything"
                 ),
             )
         )
@@ -526,6 +548,26 @@ def _tunnel_start_command(container: str) -> list[str]:
     return ["proot-distro", "login", container, "-d", "--", "/bin/sh", "/root/.tuxcomp/start-tunnel.sh"]
 
 
+def _tunnel_health_command(container: str) -> list[str]:
+    """Health probe: the cloudflared process must be alive inside the container."""
+    return ["proot-distro", "login", container, "--", "/bin/sh", "-c", "pgrep -f '[c]loudflared tunnel run' >/dev/null"]
+
+
+def _tunnel_ensure_command(container: str) -> list[str]:
+    """Non-owning project: ensure the named tunnel container's daemon is running.
+
+    Runs the start script if it exists (container provisioned by an owning
+    project). Never writes a token. Used by projects that declare
+    `cloudflared: { container: X }` without a token.
+    """
+    shell = (
+        f"proot-distro login {container} -- /bin/sh -c "
+        f"'if [ -f /root/.tuxcomp/start-tunnel.sh ]; then /bin/sh /root/.tuxcomp/start-tunnel.sh; "
+        f"else echo \"no tunnel config in {container} - deploy an owning project (with a token) first\"; fi'"
+    )
+    return ["/bin/sh", "-c", shell]
+
+
 def _start_note(service: Service) -> str:
     notes: list[str] = []
     if service.ports:
@@ -587,22 +629,7 @@ def down_plan(project: Project, active: set[str] | None = None, remove: bool = F
                     command=["proot-distro", "remove", container],
                 )
             )
-    if project.tuxcomp and project.tuxcomp.cloudflared:
-        tunnel_container = f"cloudflared-{project.name}"
-        steps.append(
-            Step(
-                kind="tunnel",
-                service="__tunnel__",
-                title=f"stop cloudflared daemon in {tunnel_container}",
-                command=[
-                    "proot-distro",
-                    "login",
-                    tunnel_container,
-                    "--",
-                    "/bin/sh",
-                    "-c",
-                    "pkill -f '[c]loudflared tunnel run' 2>/dev/null; echo 'cloudflared stopped'",
-                ],
-            )
-        )
+    # Shared tunnel containers are NOT stopped by project down — they serve
+    # every project on the device. Stop one explicitly:
+    #   tuxcomp down tuxcomp-cloudflared        (or any named tunnel container)
     return Plan(project_name=project.name, steps=steps)

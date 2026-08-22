@@ -80,6 +80,18 @@ def _delete_registry(container: str) -> None:
         os.remove(path)
 
 
+def _registered_containers() -> list[str]:
+    """All container names that have a saved registry entry."""
+    registry_dir = _registry_dir()
+    if not os.path.isdir(registry_dir):
+        return []
+    return sorted(
+        name[: -len(".json")]
+        for name in os.listdir(registry_dir)
+        if name.endswith(".json")
+    )
+
+
 def _remotes_path() -> str:
     return os.path.join(_tux_root(), "remotes.json")
 
@@ -187,14 +199,16 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
     sub.add_parser("plan", parents=[parent], help="print the translated proot-distro sequence without running it")
 
     up = sub.add_parser("up", parents=[parent], help="create and start services")
-    up.add_argument("container", nargs="?", help="container name to restart from saved config (no -f needed)")
+    up.add_argument("container", nargs="*", help="container name(s) to start from saved config (no -f needed)")
+    up.add_argument("--all", action="store_true", help="start every registered container")
     up.add_argument("--profile", action="append", default=[], help="activate a profile")
     up.add_argument("--no-detach", action="store_true", help="run login without -d (stay attached)")
     up.add_argument("--health-timeout", type=int, default=120)
     up.add_argument("--force-ports", action="store_true", help="skip the port-conflict check")
 
     down = sub.add_parser("down", parents=[parent], help="stop services (soft stop: keep containers/volumes/state)")
-    down.add_argument("container", nargs="?", help="container name to stop (no -f needed)")
+    down.add_argument("container", nargs="*", help="container name(s) to stop (no -f needed)")
+    down.add_argument("--all", action="store_true", help="stop every registered container (including tunnels)")
 
     ps = sub.add_parser("ps", parents=[parent], help="list containers (no -f: all installed; with -f: managed services)")
     ps.add_argument("-a", "--all", action="store_true", help="show all containers (default shows running only)")
@@ -247,6 +261,12 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
     remote.add_argument("--host", default=None, help="ssh target, e.g. root@192.168.1.153")
     remote.add_argument("--port", type=int, default=22, help="ssh port (default 22)")
     remote.add_argument("--default", action="store_true", help="make this the default remote")
+
+    sub.add_parser(
+        "completion",
+        parents=[parent],
+        help="print a bash/zsh completion script (source it once in ~/.bashrc or ~/.zshrc)",
+    )
 
     return parser.parse_args(args)
 
@@ -442,9 +462,31 @@ def _q(s: str) -> str:
 
 
 def _cmd_up(args: argparse.Namespace) -> int:
-    # docker-style: tuxcomp up <container> restarts from saved config (no compose)
-    if not args.file and args.container:
-        return _cmd_start(args)
+    # docker-style: tuxcomp up a b c starts containers from saved config (no compose).
+    # tuxcomp up --all starts every registered container.
+    if not args.file and (args.container or args.all):
+        containers = list(args.container)
+        if args.all:
+            containers = sorted(_registered_containers())
+        if not containers:
+            print("no registered containers to start")
+            return 0
+        failed = 0
+        for name in containers:
+            start_args = argparse.Namespace(
+                container=name,
+                health_timeout=args.health_timeout,
+                file=None,
+                project=None,
+                dry_run=False,
+                verbose=args.verbose,
+            )
+            if _cmd_start(start_args) != 0:
+                failed += 1
+        if failed:
+            print(f"error: {failed} container(s) failed to start", file=sys.stderr)
+            return 1
+        return 0
     try:
         project = _load_project(args)
         plan = build_plan(project, profiles=args.profile, detach=not args.no_detach)
@@ -495,7 +537,11 @@ def _cmd_up(args: argparse.Namespace) -> int:
                 "start": service_start_command(project, service, container, detach=True),
                 "health": _health_command(project, service, container),
                 "tunnel": bool(project.tuxcomp and project.tuxcomp.cloudflared),
-                "tunnel_container": f"cloudflared-{project.name}",
+                "tunnel_container": (
+                    project.tuxcomp.cloudflared.container
+                    if (project.tuxcomp and project.tuxcomp.cloudflared)
+                    else None
+                ),
                 "tunnel_name": (
                     project.tuxcomp.cloudflared.tunnel
                     if (project.tuxcomp and project.tuxcomp.cloudflared and project.tuxcomp.cloudflared.tunnel)
@@ -515,9 +561,23 @@ def _cmd_up(args: argparse.Namespace) -> int:
 
 
 def _cmd_down(args: argparse.Namespace) -> int:
-    # docker-style: tuxcomp down <container> soft-stops a registered container (no compose)
-    if not args.file and args.container:
-        return _stop_container(args.container)
+    # docker-style: tuxcomp down a b c soft-stops registered containers (no compose).
+    # tuxcomp down --all stops every registered container (tunnels included).
+    if not args.file and (args.container or args.all):
+        containers = list(args.container)
+        if args.all:
+            containers = sorted(_registered_containers())
+        if not containers:
+            print("no registered containers to stop")
+            return 0
+        failed = 0
+        for name in containers:
+            if _stop_container(name) != 0:
+                failed += 1
+        if failed:
+            print(f"error: {failed} container(s) failed to stop", file=sys.stderr)
+            return 1
+        return 0
     try:
         project = _load_project(args)
         plan = down_plan(project)
@@ -1226,6 +1286,56 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_completion(args: argparse.Namespace) -> int:
+    """Print a bash/zsh completion script. Source it once:
+    bash:  source <(tuxcomp completion)   (or add to ~/.bashrc)
+    zsh:   eval "$(tuxcomp completion)"    (or add to ~/.zshrc)
+    Container names are completed from the saved registry at runtime.
+    """
+    script = r'''_tuxcomp_complete() {
+    local cur prev words cword
+    if [ -n "$ZSH_VERSION" ]; then
+        words=("${words[@]}")
+        cur="${words[CURRENT]}"
+        prev="${words[CURRENT-1]}"
+    else
+        cur="${COMP_WORDS[COMP_CWORD]}"
+        prev="${COMP_WORDS[COMP_CWORD-1]}"
+    fi
+
+    local subcommands="plan up down ps list logs exec stop start rmi rebuild deploy remote completion"
+    local container_cmds="up down stop start rmi rebuild logs exec"
+
+    if [ "$COMP_CWORD" = "1" ] || [ "$CURRENT" = "2" ]; then
+        COMPREPLY=( $(compgen -W "$subcommands" -- "$cur") )
+        return 0
+    fi
+
+    case "$prev" in
+        up|down|stop|start|rmi|rebuild|logs|exec)
+            local names
+            names=$(tuxcomp ps -a 2>/dev/null | tail -n +2 | awk '{print $1}')
+            COMPREPLY=( $(compgen -W "$names" -- "$cur") )
+            return 0
+            ;;
+        -f|--file)
+            COMPREPLY=( $(compgen -f -- "$cur") )
+            return 0
+            ;;
+    esac
+    return 0
+}
+
+if [ -n "$ZSH_VERSION" ]; then
+    compdef _tuxcomp_complete tuxcomp
+else
+    complete -F _tuxcomp_complete tuxcomp
+fi
+'''
+    print(script, end="")
+    return 0
+
+
 def main(args: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -1247,6 +1357,7 @@ def main(args: list[str] | None = None) -> int:
         "rebuild": _cmd_rebuild,
         "deploy": _cmd_deploy,
         "remote": _cmd_remote,
+        "completion": _cmd_completion,
     }
     handler = handlers[parsed.command]
     try:

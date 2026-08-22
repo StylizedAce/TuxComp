@@ -52,6 +52,7 @@ class ServiceTuxComp:
 class CloudflaredConfig:
     token: Optional[str] = None
     tunnel: Optional[str] = None
+    container: str = "tuxcomp-cloudflared"
 
 
 @dataclass
