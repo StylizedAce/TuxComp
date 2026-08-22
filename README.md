@@ -60,12 +60,17 @@ Expose a container to the internet via a Cloudflare tunnel. Two modes:
 
 **Host mode (recommended)** — reuses the device's globally-installed cloudflared
 (registered once via `cloudflared tunnel login`) and its `~/.cloudflared` config.
-One instance serves every exposed service; no token in the compose file:
+One **shared** instance serves every exposed service on the device (one tunnel
+connection, many public hostnames → localhost ports). No token in the compose:
 
 ```yaml
 x-tuxcomp:
   cloudflared: {}
 ```
+
+Host mode is idempotent: if cloudflared is already running it is left alone
+(never killed — other projects may use the same instance), and `down` does NOT
+stop it. Manually stop with `tuxcomp stop cloudflared` or `pkill cloudflared`.
 
 Optionally name the tunnel (from `cloudflared tunnel list`):
 
@@ -75,8 +80,9 @@ x-tuxcomp:
     tunnel: my-tunnel-name
 ```
 
-**Token mode** — installs cloudflared inside a container and starts a named
-token tunnel (useful for fresh phones without a host setup):
+**Token mode** — installs cloudflared inside a container and starts a token
+tunnel owned by that project (useful for a fresh phone with no host setup, or
+a dedicated tunnel). This one DOES stop on `down`:
 
 ```yaml
 x-tuxcomp:
@@ -85,25 +91,20 @@ x-tuxcomp:
     tunnel: my-app.example.com
 ```
 
-In both modes the tunnel lifecycle follows the container: `up`/`start`/`deploy`
-bring cloudflared up, `down` stops it.
-
 ## Env sync
 
-Deploy can push a local `.env` to the target so compose's `${VAR:?...}` references
-resolve with secrets that never enter git:
+Add `.env` to the deploy `sync:` list to push local secrets to the target.
+The compose resolves `${VAR:?...}` from the `.env` next to it, and the local
+file is gitignored:
 
 ```yaml
 x-tuxcomp:
   deploy:
     remote_dir: ~/my-app
-    env_sync: .env        # pushed to ~/my-app/.env on every deploy
     sync:
+      - .env
       - app/
 ```
-
-Keep the local `.env` gitignored — only the compose's variable references are
-committed.
 
 ## Development
 

@@ -242,7 +242,6 @@ def _parse_tuxcomp_project(raw: dict) -> ProjectTuxComp | None:
             sync=[str(p) for p in sync],
             pip_wheels=bool(deploy.get("pip_wheels", False)),
             requirements=str(deploy["requirements"]) if deploy.get("requirements") else None,
-            env_sync=str(deploy["env_sync"]) if deploy.get("env_sync") else None,
         )
     return ProjectTuxComp(cloudflared=cf, deploy=dp)
 

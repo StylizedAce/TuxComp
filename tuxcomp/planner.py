@@ -561,18 +561,24 @@ def _tunnel_host_check_command() -> list[str]:
 
 
 def _tunnel_host_start_command(tunnel: str | None) -> list[str]:
-    """Host mode: start the host's global cloudflared, daemonized so it survives ssh close.
+    """Host mode: ensure the device's GLOBAL cloudflared is running.
 
-    Uses the host's ~/.cloudflared config (from `cloudflared tunnel login`). If a tunnel
-    name is given it is passed explicitly; otherwise cloudflared picks the default from
-    its config file.
+    The host cloudflared is shared across every exposed service on the device
+    (one process, one tunnel connection, many public hostnames → localhost
+    ports). It is idempotent: if an instance is already running it is left
+    alone (never killed - that would drop other projects' tunnels). `down`
+    does NOT stop it either, for the same reason; `tuxcomp stop cloudflared`
+    is the manual escape hatch.
     """
     name_part = f" {_q_sh(tunnel)}" if tunnel else ""
     shell = (
+        f"if pgrep -f '[c]loudflared tunnel run' >/dev/null; then "
+        f"echo 'host cloudflared already running - leaving it alone'; "
+        f"else "
         f"mkdir -p /var/log/tuxcomp && "
-        f"pkill -f '[c]loudflared tunnel run' 2>/dev/null; sleep 1; "
         f"nohup cloudflared tunnel run{name_part} > /var/log/tuxcomp/cloudflared.log 2>&1 & "
-        f"disown; echo 'host cloudflared started (log: /var/log/tuxcomp/cloudflared.log)'"
+        f"disown; echo 'host cloudflared started (log: /var/log/tuxcomp/cloudflared.log)'; "
+        f"fi"
     )
     return ["/bin/sh", "-c", shell]
 
@@ -646,6 +652,7 @@ def down_plan(project: Project, active: set[str] | None = None, remove: bool = F
         cf = project.tuxcomp.cloudflared
         tunnel_container = _tunnel_container(project, ordered, list(active))
         if cf.token:
+            # Token mode: the tunnel is owned by this project's container - stop it.
             steps.append(
                 Step(
                     kind="tunnel",
@@ -663,12 +670,16 @@ def down_plan(project: Project, active: set[str] | None = None, remove: bool = F
                 )
             )
         else:
+            # Host mode: the cloudflared is SHARED across every exposed service on
+            # the device. down stops only this project's containers - the tunnel
+            # stays up so other projects keep working.
             steps.append(
                 Step(
-                    kind="tunnel",
+                    kind="note",
                     service="__tunnel__",
-                    title="stop host cloudflared tunnel",
-                    command=["/bin/sh", "-c", "pkill -f '[c]loudflared tunnel run' 2>/dev/null; echo 'host cloudflared stopped'"],
+                    title="leave shared host cloudflared running",
+                    command=[],
+                    note="host cloudflared is shared across projects - it stays up (stop manually with `tuxcomp stop cloudflared`)",
                 )
             )
     return Plan(project_name=project.name, steps=steps)

@@ -64,9 +64,8 @@ class DeployConfig:
     pip_wheels: pre-download aarch64 wheels on the PC and push them, so the
     phone's pip installs come from local wheels instead of PyPI (much faster).
 
-    env_sync: optional path to a local .env file that is pushed to the target
-    as <remote_dir>/.env on every deploy. Secrets stay out of git (gitignore
-    the local file); only the compose's ${VAR:?...} references are committed.
+    Put `.env` in sync: to push local secrets to <remote_dir>/.env (gitignore
+    the local file; the compose only references ${VAR:?...}).
     """
 
     host: str = ""
@@ -76,7 +75,6 @@ class DeployConfig:
     sync: list[str] = field(default_factory=list)
     pip_wheels: bool = False
     requirements: Optional[str] = None
-    env_sync: Optional[str] = None
 
 
 @dataclass

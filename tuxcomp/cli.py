@@ -782,12 +782,18 @@ def _cmd_start(args: argparse.Namespace) -> int:
 
     if entry.get("tunnel"):
         if entry.get("tunnel_mode") == "host":
-            # Host mode: restart the device's global cloudflared on the host shell.
+            # Host mode: ensure the shared global cloudflared is running (never
+            # kill it - other projects may rely on the same instance).
             tunnel = entry.get("tunnel_name")
             name_part = f" {shlex.quote(tunnel)}" if tunnel else ""
             tunnel_cmd = ["/bin/sh", "-c", (
-                "pkill -f '[c]loudflared tunnel run' 2>/dev/null; sleep 1; "
-                f"nohup cloudflared tunnel run{name_part} > /var/log/tuxcomp/cloudflared.log 2>&1 & disown"
+                "if pgrep -f '[c]loudflared tunnel run' >/dev/null; then "
+                "echo 'host cloudflared already running - leaving it alone'; "
+                "else "
+                "mkdir -p /var/log/tuxcomp && "
+                f"nohup cloudflared tunnel run{name_part} > /var/log/tuxcomp/cloudflared.log 2>&1 & disown; "
+                "echo 'host cloudflared started'; "
+                "fi"
             )]
         else:
             tunnel_cmd = [
@@ -1227,17 +1233,6 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
                 return 1
             if _scp(host, port, src, dest) != 0:
                 return 1
-
-    # 4b. push the local .env to <remote_root>/.env so compose's ${VAR:?...}
-    #     references resolve with secrets that never touch git.
-    if deploy.env_sync:
-        env_src = os.path.join(project.source_dir, deploy.env_sync)
-        if not os.path.exists(env_src):
-            print(f"error: env_sync file not found: {deploy.env_sync} ({env_src})", file=sys.stderr)
-            return 1
-        print(f"  → sync env {deploy.env_sync} -> {remote_root}/.env")
-        if _scp(host, port, env_src, f"{remote_root}/.env") != 0:
-            return 1
 
     # 5. up on the phone
     compose_base = os.path.basename(compose_src)
