@@ -1301,36 +1301,47 @@ def _cmd_completion(args: argparse.Namespace) -> int:
     """Print a bash/zsh completion script. Source it once:
     bash:  source <(tuxcomp completion)   (or add to ~/.bashrc)
     zsh:   eval "$(tuxcomp completion)"    (or add to ~/.zshrc)
-    Container names are completed from the saved registry at runtime.
+    Container names are completed straight from the saved registry
+    (~/.tuxcomp/registry/*.json) - no subprocess calls, so it stays fast
+    and never triggers proot over SSH.
     """
     script = r'''_tuxcomp_complete() {
-    local cur prev words cword
+    local cur prev idx
     if [ -n "$ZSH_VERSION" ]; then
-        words=("${words[@]}")
         cur="${words[CURRENT]}"
         prev="${words[CURRENT-1]}"
+        idx="$CURRENT"
     else
         cur="${COMP_WORDS[COMP_CWORD]}"
         prev="${COMP_WORDS[COMP_CWORD-1]}"
+        idx="$COMP_CWORD"
     fi
 
     local subcommands="plan up down ps list logs exec stop start rmi rebuild deploy remote completion"
-    local container_cmds="up down stop start rmi rebuild logs exec"
 
-    if [ "$COMP_CWORD" = "1" ] || [ "$CURRENT" = "2" ]; then
+    # First argument: the subcommand itself.
+    if [ "$idx" = "1" ]; then
         COMPREPLY=( $(compgen -W "$subcommands" -- "$cur") )
         return 0
     fi
 
     case "$prev" in
         up|down|stop|start|rmi|rebuild|logs|exec)
+            # Container names from the registry dir - fast, no subprocesses.
             local names
-            names=$(tuxcomp ps -a 2>/dev/null | tail -n +2 | awk '{print $1}')
-            COMPREPLY=( $(compgen -W "$names" -- "$cur") )
-            return 0
+            names=$(ls "$HOME/.tuxcomp/registry/" 2>/dev/null | sed 's/\.json$//' | tr '\n' ' ')
+            if [ -n "$names" ]; then
+                COMPREPLY=( $(compgen -W "$names" -- "$cur") )
+                return 0
+            fi
             ;;
         -f|--file)
-            COMPREPLY=( $(compgen -f -- "$cur") )
+            # Let the shell do file completion for -f/--file.
+            if [ -n "$ZSH_VERSION" ]; then
+                _files
+            else
+                compopt -o default 2>/dev/null
+            fi
             return 0
             ;;
     esac
