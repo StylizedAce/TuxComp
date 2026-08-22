@@ -171,15 +171,17 @@ def test_plan_cloudflared(monkeypatch):
     project = parse_compose_file(FIXTURES / "v2-tunnel.yml")
     plan = build_plan(project)
     tunnel = [s for s in plan.steps if s.kind == "tunnel"]
-    assert len(tunnel) == 3  # ensure binary, write token, start (all host-global)
+    assert len(tunnel) == 3  # install binary, write token, start daemon
     assert any("cloudflared" in s.command[-1] for s in tunnel)
     assert any("tunnel-token" in s.command[-1] for s in tunnel)
     assert any("cloudflared tunnel run" in s.command[-1] for s in tunnel)
-    # No proot in tunnel steps - unified host-global model
-    assert not any("proot-distro" in s.command for s in tunnel)
+    # Per-project container runs via proot (DNS works inside proot on Android)
+    assert any("proot-distro" in s.command for s in tunnel)
     down = down_plan(project)
-    # down leaves the shared cloudflared running (note, not a kill)
-    assert not any(s.kind == "tunnel" for s in down.steps)
+    # down kills the project's cloudflared container
+    down_tunnel = [s for s in down.steps if s.kind == "tunnel"]
+    assert len(down_tunnel) == 1
+    assert "cloudflared" in down_tunnel[0].command[-1]
 
 
 def test_plan_build_service():

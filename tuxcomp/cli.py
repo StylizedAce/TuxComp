@@ -495,7 +495,7 @@ def _cmd_up(args: argparse.Namespace) -> int:
                 "start": service_start_command(project, service, container, detach=True),
                 "health": _health_command(project, service, container),
                 "tunnel": bool(project.tuxcomp and project.tuxcomp.cloudflared),
-                "tunnel_mode": "host",
+                "tunnel_container": f"cloudflared-{project.name}",
                 "tunnel_name": (
                     project.tuxcomp.cloudflared.tunnel
                     if (project.tuxcomp and project.tuxcomp.cloudflared and project.tuxcomp.cloudflared.tunnel)
@@ -777,25 +777,17 @@ def _cmd_start(args: argparse.Namespace) -> int:
             return 1
 
     if entry.get("tunnel"):
-        # Unified host-global model: ensure the shared device cloudflared is
-        # running (never kill it - other projects may rely on the same
-        # instance). Uses ~/.tuxcomp/tunnel-token if present.
-        tunnel = entry.get("tunnel_name")
-        name_part = f" {shlex.quote(tunnel)}" if tunnel else ""
-        tunnel_cmd = ["/bin/sh", "-c", (
-            "if pgrep -f '[c]loudflared tunnel run' >/dev/null; then "
-            "echo 'host cloudflared already running - leaving it alone'; "
-            "else "
-            "TERMUX_LOG=\"$HOME/tuxcomp-logs\"; mkdir -p \"$TERMUX_LOG\" && "
-            "termux-wake-lock 2>/dev/null || true && "
-            "if [ -f \"$HOME/.tuxcomp/tunnel-token\" ]; then "
-            f"nohup cloudflared tunnel run --token \"$(cat \"$HOME/.tuxcomp/tunnel-token\")\"{name_part} > \"$TERMUX_LOG/cloudflared.log\" 2>&1 & disown; "
-            "else "
-            f"nohup cloudflared tunnel run{name_part} > \"$TERMUX_LOG/cloudflared.log\" 2>&1 & disown; "
-            "fi; "
-            "echo 'host cloudflared started'; "
-            "fi"
-        )]
+        # Per-project proot container: replay the start-tunnel.sh script.
+        container = entry.get("tunnel_container", args.container)
+        tunnel_cmd = [
+            _proot(),
+            "login",
+            container,
+            "-d",
+            "--",
+            "/bin/sh",
+            "/root/.tuxcomp/start-tunnel.sh",
+        ]
         try:
             subprocess.run(tunnel_cmd, capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.TimeoutExpired) as exc:

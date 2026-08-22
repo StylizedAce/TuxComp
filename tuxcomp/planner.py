@@ -346,20 +346,22 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
 
     if project.tuxcomp and project.tuxcomp.cloudflared:
         cf = project.tuxcomp.cloudflared
-        # Unified HOST-global model: ONE cloudflared instance on the device
-        # (Termux host shell, outside any container) serves every exposed
-        # project. tuxcomp ensures the binary exists, writes the token to
-        # ~/.tuxcomp/tunnel-token on the HOST, and runs a single idempotent
-        # daemon. If cloudflared is already running it is left alone.
+        # Shared proot container approach: one cloudflared instance in a single
+        # proot container serves every exposed service on the device. Android's
+        # /etc/resolv.conf is read-only, so Go's DNS resolver (used by
+        # cloudflared) fails on the Termux host shell. Inside a proot container,
+        # /etc/resolv.conf is writable and DNS works. Idempotent: if cloudflared
+        # is already running inside the container, it is left alone.
+        tunnel_container = f"cloudflared-{project.name}"
         steps.append(
             Step(
                 kind="tunnel",
                 service="__tunnel__",
-                title="ensure host cloudflared binary",
-                command=_tunnel_host_ensure_command(),
+                title=f"install cloudflared in {tunnel_container}",
+                command=_tunnel_install_command(tunnel_container),
                 note=(
-                    f"installs cloudflared arm64 ({CLOUDFLARED_ARM64_URL}) into "
-                    f"Termux PATH if missing; never touches containers"
+                    f"downloads cloudflared arm64 ({CLOUDFLARED_ARM64_URL}) into "
+                    f"proot container {tunnel_container} (DNS works inside proot)"
                 ),
             )
         )
@@ -368,11 +370,11 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                 Step(
                     kind="tunnel",
                     service="__tunnel__",
-                    title="write host tunnel token",
-                    command=_tunnel_host_token_command(cf.token),
+                    title=f"write tunnel token in {tunnel_container}",
+                    command=_tunnel_token_command(tunnel_container, cf.token),
                     note=(
-                        f"token stored at $HOME/.tuxcomp/tunnel-token (chmod 600) on the "
-                        f"host; shown in plan only - keep it out of git"
+                        f"token stored at /root/.tuxcomp/tunnel-token (chmod 600) inside "
+                        f"{tunnel_container}; shown in plan only - keep it out of git"
                     ),
                 )
             )
@@ -380,11 +382,12 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
             Step(
                 kind="tunnel",
                 service="__tunnel__",
-                title="start host cloudflared tunnel",
-                command=_tunnel_host_start_command(cf.tunnel),
+                title=f"start cloudflared daemon in {tunnel_container}",
+                command=_tunnel_start_command(tunnel_container),
                 note=(
-                    f"starts the shared host cloudflared daemon (idempotent, survives "
-                    f"ssh close via termux-wake-lock); log at ~/tuxcomp-logs/cloudflared.log"
+                    f"starts cloudflared daemon (idempotent, survives ssh close via "
+                    f"proot -d); log at /root/.tuxcomp/cloudflared.log inside "
+                    f"{tunnel_container}"
                     + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
                 ),
             )
@@ -490,77 +493,37 @@ def _hosts_command(project: Project, active: list[str], container: str) -> list[
     return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
 
 
-def _tunnel_host_ensure_command() -> list[str]:
-    """Ensure a cloudflared binary exists ON THE HOST (Termux shell).
-
-    Prefers an already-installed binary wherever it lives; if none is found,
-    downloads the arm64 static binary into the Termux bin dir (on PATH) so it
-    becomes the device's global instance. Never touches proot containers.
-    """
+def _tunnel_install_command(container: str) -> list[str]:
     shell = (
-        f"CF_BIN=$(command -v cloudflared 2>/dev/null) || true; "
-        f"if [ -z \"$CF_BIN\" ]; then "
-        f"  for cand in \"$HOME/.local/bin/cloudflared\" \"$HOME/bin/cloudflared\" \"/usr/local/bin/cloudflared\" \"/data/data/com.termux/files/usr/bin/cloudflared\"; do "
-        f"    if [ -x \"$cand\" ]; then CF_BIN=\"$cand\"; break; fi; "
-        f"  done; "
-        f"fi; "
-        f"if [ -z \"$CF_BIN\" ]; then "
-        f"  echo 'cloudflared not found on host - installing to Termux PATH'; "
-        f"  TUX_BIN=\"${{TUXCOMP_PREFIX:-/data/data/com.termux/files/usr}}/bin\"; "
-        f"  mkdir -p \"$TUX_BIN\" && "
-        f"  curl -fsSL -o \"$TUX_BIN/cloudflared\" {CLOUDFLARED_ARM64_URL} && "
-        f"  chmod +x \"$TUX_BIN/cloudflared\" && "
-        f"  echo 'installed cloudflared to '\"$TUX_BIN/cloudflared\" || "
-        f"  {{ echo 'error: failed to install cloudflared on host' >&2; exit 1; }}; "
-        f"else "
-        f"  echo \"host cloudflared found: $CF_BIN\"; "
-        f"fi"
+        f"test -x /usr/local/bin/cloudflared || "
+        f"(curl -fsSL -o /usr/local/bin/cloudflared {CLOUDFLARED_ARM64_URL} && "
+        f"chmod +x /usr/local/bin/cloudflared)"
     )
-    return ["/bin/sh", "-c", shell]
+    return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
 
 
-def _tunnel_host_token_command(token: str) -> list[str]:
-    """Write the tunnel token on the HOST (~/.tuxcomp/tunnel-token)."""
+def _tunnel_token_command(container: str, token: str) -> list[str]:
     shell = (
-        f"mkdir -p \"$HOME/.tuxcomp\" && "
-        f"printf '%s' '{token}' > \"$HOME/.tuxcomp/tunnel-token\" && "
-        f"chmod 600 \"$HOME/.tuxcomp/tunnel-token\" && "
-        f"echo 'token written to $HOME/.tuxcomp/tunnel-token'"
+        f"mkdir -p /root/.tuxcomp && "
+        f"printf '%s' '{token}' > /root/.tuxcomp/tunnel-token && "
+        f"chmod 600 /root/.tuxcomp/tunnel-token && "
+        f"cat > /root/.tuxcomp/start-tunnel.sh <<'EOF'\n"
+        f"#!/bin/sh\n"
+        f"if pgrep -f '[c]loudflared tunnel run' >/dev/null 2>&1; then\n"
+        f"  echo 'cloudflared already running in this container - leaving it alone'\n"
+        f"else\n"
+        f"  nohup cloudflared tunnel run --token \"$(cat /root/.tuxcomp/tunnel-token)\" "
+        f"> /root/.tuxcomp/cloudflared.log 2>&1 &\n"
+        f"  disown\n"
+        f"fi\n"
+        f"EOF\n"
+        f"chmod +x /root/.tuxcomp/start-tunnel.sh"
     )
-    return ["/bin/sh", "-c", shell]
+    return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
 
 
-def _tunnel_host_start_command(tunnel: str | None) -> list[str]:
-    """Host mode: ensure the device's GLOBAL cloudflared is running.
-
-    One shared instance serves every exposed service on the device. Idempotent:
-    if cloudflared is already running it is left alone (never killed - that
-    would drop other projects' tunnels). Uses the token at
-    $HOME/.tuxcomp/tunnel-token if present, otherwise cloudflared's own config
-    (~/.cloudflared). `down` does NOT stop it.
-
-    On Android/Termux, termux-wake-lock is acquired first so the process isn't
-    killed by Android's lifecycle manager after the SSH session ends. The log
-    lives under $HOME (not /var/log, which doesn't exist on Termux).
-    """
-    name_part = f" {_q_sh(tunnel)}" if tunnel else ""
-    shell = (
-        f"if pgrep -f '[c]loudflared tunnel run' >/dev/null; then "
-        f"echo 'host cloudflared already running - leaving it alone'; "
-        f"else "
-        f"TERMUX_LOG=\"$HOME/tuxcomp-logs\"; mkdir -p \"$TERMUX_LOG\" && "
-        f"termux-wake-lock 2>/dev/null || true && "
-        f"if [ -f \"$HOME/.tuxcomp/tunnel-token\" ]; then "
-        f"nohup cloudflared tunnel run --token \"$(cat \"$HOME/.tuxcomp/tunnel-token\")\"{name_part} "
-        f"> \"$TERMUX_LOG/cloudflared.log\" 2>&1 & "
-        f"else "
-        f"nohup cloudflared tunnel run{name_part} "
-        f"> \"$TERMUX_LOG/cloudflared.log\" 2>&1 & "
-        f"fi; "
-        f"disown; echo 'host cloudflared started (log: $TERMUX_LOG/cloudflared.log)'; "
-        f"fi"
-    )
-    return ["/bin/sh", "-c", shell]
+def _tunnel_start_command(container: str) -> list[str]:
+    return ["proot-distro", "login", container, "-d", "--", "/bin/sh", "/root/.tuxcomp/start-tunnel.sh"]
 
 
 def _start_note(service: Service) -> str:
@@ -625,18 +588,21 @@ def down_plan(project: Project, active: set[str] | None = None, remove: bool = F
                 )
             )
     if project.tuxcomp and project.tuxcomp.cloudflared:
-        # The tunnel daemon (host or container token) is SHARED across projects
-        # on this device - one instance serves every exposed API. `down` stops
-        # only this project's containers; the tunnel stays up so other projects
-        # keep working. Stop it manually with `tuxcomp stop <container>` +
-        # `pkill -f cloudflared`, or on the host shell.
+        tunnel_container = f"cloudflared-{project.name}"
         steps.append(
             Step(
-                kind="note",
+                kind="tunnel",
                 service="__tunnel__",
-                title="leave shared cloudflared running",
-                command=[],
-                note="cloudflared is shared across projects on this device - it stays up after down (stop manually with pkill -f '[c]loudflared tunnel run')",
+                title=f"stop cloudflared daemon in {tunnel_container}",
+                command=[
+                    "proot-distro",
+                    "login",
+                    tunnel_container,
+                    "--",
+                    "/bin/sh",
+                    "-c",
+                    "pkill -f '[c]loudflared tunnel run' 2>/dev/null; echo 'cloudflared stopped'",
+                ],
             )
         )
     return Plan(project_name=project.name, steps=steps)
