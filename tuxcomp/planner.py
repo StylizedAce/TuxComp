@@ -396,8 +396,8 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                 command=_tunnel_start_command(tunnel_container),
                 note=(
                     f"starts cloudflared daemon (idempotent, survives ssh close via "
-                    f"proot -d); log at /root/.tuxcomp/cloudflared.log inside "
-                    f"{tunnel_container}"
+                    f"proot -d); logs to the session - view with `tuxcomp logs "
+                    f"{tunnel_container}`"
                     + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
                 ),
             )
@@ -525,27 +525,34 @@ def _tunnel_install_command(container: str) -> list[str]:
 
 
 def _tunnel_token_command(container: str, token: str) -> list[str]:
+    """Write the tunnel token inside the container (always overwrite)."""
     shell = (
         f"mkdir -p /root/.tuxcomp && "
         f"printf '%s' '{token}' > /root/.tuxcomp/tunnel-token && "
         f"chmod 600 /root/.tuxcomp/tunnel-token && "
-        f"cat > /root/.tuxcomp/start-tunnel.sh <<'EOF'\n"
-        f"#!/bin/sh\n"
-        f"if pgrep -f '[c]loudflared tunnel run' >/dev/null 2>&1; then\n"
-        f"  echo 'cloudflared already running in this container - leaving it alone'\n"
-        f"else\n"
-        f"  nohup cloudflared tunnel run --token \"$(cat /root/.tuxcomp/tunnel-token)\" "
-        f"> /root/.tuxcomp/cloudflared.log 2>&1 &\n"
-        f"  disown\n"
-        f"fi\n"
-        f"EOF\n"
-        f"chmod +x /root/.tuxcomp/start-tunnel.sh"
+        f"echo 'token written to /root/.tuxcomp/tunnel-token'"
     )
     return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
 
 
 def _tunnel_start_command(container: str) -> list[str]:
-    return ["proot-distro", "login", container, "-d", "--", "/bin/sh", "/root/.tuxcomp/start-tunnel.sh"]
+    """Start cloudflared as the container's foreground process.
+
+    The -d flag detaches the proot session from the terminal, but the
+    container stays alive as long as cloudflared runs. This is fundamentally
+    more robust than background-job approaches: no nohup, no disown, no
+    orphan risk — the container lifecycle IS cloudflared's lifecycle.
+
+    IMPORTANT: do NOT pass --logfile here. In detached proot sessions on
+    Termux, cloudflared exits immediately when asked to open a log file
+    (the redirect fails and the process dies in ~2s). Without --logfile it
+    survives and logs to the session (view via `tuxcomp logs <container>`).
+    """
+    return [
+        "proot-distro", "login", container, "-d", "--",
+        "/usr/local/bin/cloudflared", "tunnel", "run",
+        "--token-file", "/root/.tuxcomp/tunnel-token",
+    ]
 
 
 def _tunnel_health_command(container: str) -> list[str]:

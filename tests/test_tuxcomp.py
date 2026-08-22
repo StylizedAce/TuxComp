@@ -173,9 +173,9 @@ def test_plan_cloudflared(monkeypatch):
     tunnel = [s for s in plan.steps if s.kind == "tunnel"]
     # ensure container (install), install binary, write token, start daemon
     assert len(tunnel) == 3
-    assert any("cloudflared" in s.command[-1] for s in tunnel)
-    assert any("tunnel-token" in s.command[-1] for s in tunnel)
-    assert any("cloudflared tunnel run" in s.command[-1] for s in tunnel)
+    assert any("cloudflared" in str(s.command) for s in tunnel)
+    assert any("tunnel-token" in str(s.command) for s in tunnel)
+    assert any("cloudflared" in str(s.command) and "tunnel" in str(s.command) and "run" in str(s.command) for s in tunnel)
     # The shared container has the fixed default name and a health step exists.
     assert any("tuxcomp-cloudflared" in s.title for s in plan.steps)
     assert any(s.kind == "health" and "cloudflared" in s.title for s in plan.steps)

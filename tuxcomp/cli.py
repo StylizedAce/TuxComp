@@ -557,6 +557,30 @@ def _cmd_up(args: argparse.Namespace) -> int:
         )
     state.update_services(started)
     print(f"started {len(started)} service(s)")
+
+    # Register the shared cloudflared container so tuxcomp start/stop/down can target it.
+    if project.tuxcomp and project.tuxcomp.cloudflared:
+        tc = project.tuxcomp.cloudflared.container or "tuxcomp-cloudflared"
+        cloudflared_start = [
+            "proot-distro", "login", tc, "-d", "--",
+            "/usr/local/bin/cloudflared", "tunnel", "run",
+            "--token-file", "/root/.tuxcomp/tunnel-token",
+        ]
+        _save_registry({
+            "container": tc,
+            "project": project.name,
+            "compose_file": os.path.abspath(project.source_file),
+            "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "ports": [],
+            "start": cloudflared_start,
+            "health": ["proot-distro", "login", tc, "--", "/bin/sh", "-c",
+                        "pgrep -f '[c]loudflared tunnel run' >/dev/null"],
+            "tunnel": True,
+            "tunnel_container": tc,
+            "volume_dirs": [],
+        })
+        print(f"registered tunnel container {tc}")
+
     return 0
 
 
@@ -837,23 +861,10 @@ def _cmd_start(args: argparse.Namespace) -> int:
             return 1
 
     if entry.get("tunnel"):
-        # Per-project proot container: replay the start-tunnel.sh script.
-        container = entry.get("tunnel_container", args.container)
-        tunnel_cmd = [
-            _proot(),
-            "login",
-            container,
-            "-d",
-            "--",
-            "/bin/sh",
-            "/root/.tuxcomp/start-tunnel.sh",
-        ]
-        try:
-            subprocess.run(tunnel_cmd, capture_output=True, text=True, timeout=60)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            print(f"error: tunnel start failed: {exc}", file=sys.stderr)
-            return 1
-        print(f"tunnel restarted ({args.container})")
+        # Tunnel container: cloudflared IS the main process (foreground via
+        # proot-distro login -d), so there is nothing extra to restart — the
+        # start command already ran it.  Just log it.
+        print(f"tunnel container {entry.get('tunnel_container', args.container)} restarted via start command")
     return 0
 
 
