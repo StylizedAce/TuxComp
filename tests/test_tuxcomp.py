@@ -726,6 +726,83 @@ def test_deploy_upgrades_outdated_tuxcomp(tmp_path, monkeypatch, capsys):
     assert calls[1][0] == "ssh" and "mkdir -p" in calls[1][-1]
 
 
+def test_deploy_syncs_env_file(tmp_path, monkeypatch, capsys):
+    """env_sync pushes the local .env to <remote_dir>/.env."""
+    import subprocess as sp
+
+    from tuxcomp import __version__
+    from tuxcomp.cli import _cmd_deploy, _parse_args
+
+    (tmp_path / "compose.yml").write_text(
+        'services:\n'
+        '  app:\n'
+        '    image: app:latest\n'
+        'x-tuxcomp:\n'
+        '  deploy:\n'
+        '    host: root@192.168.1.153\n'
+        '    port: 8022\n'
+        '    remote_dir: ~/upload-tool\n'
+        '    env_sync: .env\n'
+        '    sync:\n'
+        '      - dist/browser\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "browser").mkdir()
+    (tmp_path / ".env").write_text("SECRET=123\n", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    def fake_call(cmd, **kwargs):
+        calls.append(cmd)
+        return 0
+
+    def fake_ssh_out(host, port, cmd, timeout=30):
+        return f"tuxcomp {__version__}"
+
+    monkeypatch.setattr(sp, "call", fake_call)
+    monkeypatch.setattr("tuxcomp.cli._ssh_out", fake_ssh_out)
+    monkeypatch.chdir(tmp_path)
+    args = _parse_args(["deploy", "-f", "compose.yml"])
+    assert _cmd_deploy(args) == 0
+    # One of the calls must be scp of .env -> remote/.env
+    assert any(
+        c[0] == "scp" and str(c[-1]).endswith("/.env") and any(".env" == os.path.basename(x) for x in c)
+        for c in calls
+    ), f"no .env sync found in calls: {calls}"
+
+
+def test_deploy_env_sync_missing_file_fails(tmp_path, monkeypatch, capsys):
+    """env_sync pointing at a missing file must fail before any push."""
+    import subprocess as sp
+
+    from tuxcomp.cli import _cmd_deploy, _parse_args
+
+    (tmp_path / "compose.yml").write_text(
+        'services:\n'
+        '  app:\n'
+        '    image: app:latest\n'
+        'x-tuxcomp:\n'
+        '  deploy:\n'
+        '    host: root@192.168.1.153\n'
+        '    port: 8022\n'
+        '    remote_dir: ~/upload-tool\n'
+        '    env_sync: .env\n'
+        '    sync:\n'
+        '      - dist/browser\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "browser").mkdir()
+
+    monkeypatch.setattr(sp, "call", lambda cmd, **kwargs: 0)
+    monkeypatch.setattr("tuxcomp.cli._ssh_out", lambda host, port, cmd, timeout=30: "tuxcomp 0.8.3")
+    monkeypatch.chdir(tmp_path)
+    args = _parse_args(["deploy", "-f", "compose.yml"])
+    assert _cmd_deploy(args) == 1
+    assert "env_sync file not found" in capsys.readouterr().err
+
+
 def test_remote_add_list_default(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
     from tuxcomp.cli import _cmd_remote, _parse_args

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tuxcomp"
-version = "0.8.3"
+version = "0.8.4"
 description = "Docker Compose orchestration for proot-distro on Termux"
 readme = "README.md"
 requires-python = ">=3.10"

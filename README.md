@@ -58,7 +58,25 @@ tuxcomp deploy -f docker-compose.yml
 
 Expose a container to the internet via a Cloudflare tunnel. Two modes:
 
-**Token mode** — installs cloudflared and starts a named tunnel:
+**Host mode (recommended)** — reuses the device's globally-installed cloudflared
+(registered once via `cloudflared tunnel login`) and its `~/.cloudflared` config.
+One instance serves every exposed service; no token in the compose file:
+
+```yaml
+x-tuxcomp:
+  cloudflared: {}
+```
+
+Optionally name the tunnel (from `cloudflared tunnel list`):
+
+```yaml
+x-tuxcomp:
+  cloudflared:
+    tunnel: my-tunnel-name
+```
+
+**Token mode** — installs cloudflared inside a container and starts a named
+token tunnel (useful for fresh phones without a host setup):
 
 ```yaml
 x-tuxcomp:
@@ -67,16 +85,25 @@ x-tuxcomp:
     tunnel: my-app.example.com
 ```
 
-**Daemon mode** — starts cloudflared using config already present on the target
-(no credentials in the compose file):
+In both modes the tunnel lifecycle follows the container: `up`/`start`/`deploy`
+bring cloudflared up, `down` stops it.
+
+## Env sync
+
+Deploy can push a local `.env` to the target so compose's `${VAR:?...}` references
+resolve with secrets that never enter git:
 
 ```yaml
 x-tuxcomp:
-  cloudflared: {}
+  deploy:
+    remote_dir: ~/my-app
+    env_sync: .env        # pushed to ~/my-app/.env on every deploy
+    sync:
+      - app/
 ```
 
-In both modes the tunnel lifecycle follows the container: `up`/`start`/`deploy` bring
-cloudflared up, `down` stops it.
+Keep the local `.env` gitignored — only the compose's variable references are
+committed.
 
 ## Development
 

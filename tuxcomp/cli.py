@@ -495,6 +495,16 @@ def _cmd_up(args: argparse.Namespace) -> int:
                 "start": service_start_command(project, service, container, detach=True),
                 "health": _health_command(project, service, container),
                 "tunnel": bool(project.tuxcomp and project.tuxcomp.cloudflared),
+                "tunnel_mode": (
+                    "host"
+                    if (project.tuxcomp and project.tuxcomp.cloudflared and not project.tuxcomp.cloudflared.token)
+                    else "container"
+                ),
+                "tunnel_name": (
+                    project.tuxcomp.cloudflared.tunnel
+                    if (project.tuxcomp and project.tuxcomp.cloudflared and project.tuxcomp.cloudflared.tunnel)
+                    else None
+                ),
                 "volume_dirs": sorted(
                     set(
                         bind_args(project, service, volume_dirs_for(project))[i + 1].split(":")[0]
@@ -771,15 +781,24 @@ def _cmd_start(args: argparse.Namespace) -> int:
             return 1
 
     if entry.get("tunnel"):
-        tunnel_cmd = [
-            _proot(),
-            "login",
-            args.container,
-            "-d",
-            "--",
-            "/bin/sh",
-            "/root/.tuxcomp/start-tunnel.sh",
-        ]
+        if entry.get("tunnel_mode") == "host":
+            # Host mode: restart the device's global cloudflared on the host shell.
+            tunnel = entry.get("tunnel_name")
+            name_part = f" {shlex.quote(tunnel)}" if tunnel else ""
+            tunnel_cmd = ["/bin/sh", "-c", (
+                "pkill -f '[c]loudflared tunnel run' 2>/dev/null; sleep 1; "
+                f"nohup cloudflared tunnel run{name_part} > /var/log/tuxcomp/cloudflared.log 2>&1 & disown"
+            )]
+        else:
+            tunnel_cmd = [
+                _proot(),
+                "login",
+                args.container,
+                "-d",
+                "--",
+                "/bin/sh",
+                "/root/.tuxcomp/start-tunnel.sh",
+            ]
         try:
             subprocess.run(tunnel_cmd, capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1208,6 +1227,17 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
                 return 1
             if _scp(host, port, src, dest) != 0:
                 return 1
+
+    # 4b. push the local .env to <remote_root>/.env so compose's ${VAR:?...}
+    #     references resolve with secrets that never touch git.
+    if deploy.env_sync:
+        env_src = os.path.join(project.source_dir, deploy.env_sync)
+        if not os.path.exists(env_src):
+            print(f"error: env_sync file not found: {deploy.env_sync} ({env_src})", file=sys.stderr)
+            return 1
+        print(f"  → sync env {deploy.env_sync} -> {remote_root}/.env")
+        if _scp(host, port, env_src, f"{remote_root}/.env") != 0:
+            return 1
 
     # 5. up on the phone
     compose_base = os.path.basename(compose_src)

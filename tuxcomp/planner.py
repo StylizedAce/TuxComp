@@ -347,21 +347,21 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
     if project.tuxcomp and project.tuxcomp.cloudflared:
         cf = project.tuxcomp.cloudflared
         tunnel_container = _tunnel_container(project, ordered, active)
-        steps.append(
-            Step(
-                kind="tunnel",
-                service="__tunnel__",
-                title="install cloudflared binary in container",
-                command=_tunnel_install_command(tunnel_container),
-                note=(
-                    f"downloads cloudflared arm64 ({CLOUDFLARED_ARM64_URL}) into "
-                    f"{tunnel_container}; requires curl in the container (add curl to "
-                    f"x-tuxcomp.packages if missing)"
-                ),
-            )
-        )
         if cf.token:
-            # Token mode: write token + start with --token
+            # Token mode: install cloudflared INSIDE the container, start with --token
+            steps.append(
+                Step(
+                    kind="tunnel",
+                    service="__tunnel__",
+                    title="install cloudflared binary in container",
+                    command=_tunnel_install_command(tunnel_container),
+                    note=(
+                        f"downloads cloudflared arm64 ({CLOUDFLARED_ARM64_URL}) into "
+                        f"{tunnel_container}; requires curl in the container (add curl to "
+                        f"x-tuxcomp.packages if missing)"
+                    ),
+                )
+            )
             steps.append(
                 Step(
                     kind="tunnel",
@@ -374,33 +374,48 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                     ),
                 )
             )
-        else:
-            # Daemon mode: just ensure cloudflared binary exists, start with existing config
             steps.append(
                 Step(
                     kind="tunnel",
                     service="__tunnel__",
-                    title="ensure cloudflared tunnel config",
-                    command=_tunnel_daemon_command(tunnel_container),
+                    title="start cloudflared tunnel",
+                    command=_tunnel_start_command(tunnel_container),
                     note=(
-                        f"ensures cloudflared binary and start script exist in "
-                        f"{tunnel_container}; uses existing phone config (no token needed)"
+                        f"starts cloudflared daemon in {tunnel_container}; "
+                        f"log at /var/log/cloudflared.log"
+                        + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
                     ),
                 )
             )
-        steps.append(
-            Step(
-                kind="tunnel",
-                service="__tunnel__",
-                title="start cloudflared tunnel",
-                command=_tunnel_start_command(tunnel_container),
-                note=(
-                    f"starts cloudflared daemon in {tunnel_container}; "
-                    f"log at /var/log/cloudflared.log"
-                    + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
-                ),
+        else:
+            # HOST mode: reuse the device's globally-installed cloudflared and its
+            # ~/.cloudflared config, started on the host shell (outside any
+            # container). One instance serves every exposed service on the device.
+            steps.append(
+                Step(
+                    kind="tunnel",
+                    service="__tunnel__",
+                    title="check host cloudflared binary",
+                    command=_tunnel_host_check_command(),
+                    note=(
+                        "uses the cloudflared installed on the host (Termux) and its "
+                        "~/.cloudflared config - no per-container install, no token"
+                    ),
+                )
             )
-        )
+            steps.append(
+                Step(
+                    kind="tunnel",
+                    service="__tunnel__",
+                    title="start host cloudflared tunnel",
+                    command=_tunnel_host_start_command(cf.tunnel),
+                    note=(
+                        f"starts host cloudflared daemon (survives ssh close); "
+                        f"log at /var/log/tuxcomp/cloudflared.log"
+                        + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
+                    ),
+                )
+            )
 
     return Plan(project_name=project.name, steps=steps)
 
@@ -535,20 +550,31 @@ def _tunnel_token_command(container: str, token: str) -> list[str]:
     return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
 
 
-def _tunnel_daemon_command(container: str) -> list[str]:
-    """Ensure cloudflared start script exists using existing phone config (no token)."""
+def _tunnel_host_check_command() -> list[str]:
+    """Host mode: verify the globally-installed cloudflared exists (no proot)."""
     shell = (
-        f"mkdir -p /root/.tuxcomp /var/log && "
-        f"cat > /root/.tuxcomp/start-tunnel.sh <<'EOF'\n"
-        f"#!/bin/sh\n"
-        f"pkill -f '[c]loudflared tunnel run' 2>/dev/null\n"
-        f"nohup cloudflared tunnel run "
-        f"> /var/log/cloudflared.log 2>&1 &\n"
-        f"disown\n"
-        f"EOF\n"
-        f"chmod +x /root/.tuxcomp/start-tunnel.sh"
+        f"command -v cloudflared >/dev/null 2>&1 || "
+        f"{{ echo 'error: cloudflared not found on host - install it first "
+        f"(https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/ or pkg install cloudflared)' >&2; exit 1; }}"
     )
-    return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
+    return ["/bin/sh", "-c", shell]
+
+
+def _tunnel_host_start_command(tunnel: str | None) -> list[str]:
+    """Host mode: start the host's global cloudflared, daemonized so it survives ssh close.
+
+    Uses the host's ~/.cloudflared config (from `cloudflared tunnel login`). If a tunnel
+    name is given it is passed explicitly; otherwise cloudflared picks the default from
+    its config file.
+    """
+    name_part = f" {_q_sh(tunnel)}" if tunnel else ""
+    shell = (
+        f"mkdir -p /var/log/tuxcomp && "
+        f"pkill -f '[c]loudflared tunnel run' 2>/dev/null; sleep 1; "
+        f"nohup cloudflared tunnel run{name_part} > /var/log/tuxcomp/cloudflared.log 2>&1 & "
+        f"disown; echo 'host cloudflared started (log: /var/log/tuxcomp/cloudflared.log)'"
+    )
+    return ["/bin/sh", "-c", shell]
 
 
 def _tunnel_start_command(container: str) -> list[str]:
@@ -617,21 +643,32 @@ def down_plan(project: Project, active: set[str] | None = None, remove: bool = F
                 )
             )
     if project.tuxcomp and project.tuxcomp.cloudflared:
+        cf = project.tuxcomp.cloudflared
         tunnel_container = _tunnel_container(project, ordered, list(active))
-        steps.append(
-            Step(
-                kind="tunnel",
-                service="__tunnel__",
-                title="stop cloudflared tunnel",
-                command=[
-                    "proot-distro",
-                    "login",
-                    tunnel_container,
-                    "--",
-                    "/bin/sh",
-                    "-c",
-                    "pkill -f '[c]loudflared tunnel run' 2>/dev/null; echo 'cloudflared stopped'",
-                ],
+        if cf.token:
+            steps.append(
+                Step(
+                    kind="tunnel",
+                    service="__tunnel__",
+                    title="stop cloudflared tunnel",
+                    command=[
+                        "proot-distro",
+                        "login",
+                        tunnel_container,
+                        "--",
+                        "/bin/sh",
+                        "-c",
+                        "pkill -f '[c]loudflared tunnel run' 2>/dev/null; echo 'cloudflared stopped'",
+                    ],
+                )
             )
-        )
+        else:
+            steps.append(
+                Step(
+                    kind="tunnel",
+                    service="__tunnel__",
+                    title="stop host cloudflared tunnel",
+                    command=["/bin/sh", "-c", "pkill -f '[c]loudflared tunnel run' 2>/dev/null; echo 'host cloudflared stopped'"],
+                )
+            )
     return Plan(project_name=project.name, steps=steps)
