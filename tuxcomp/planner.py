@@ -384,7 +384,7 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                 command=_tunnel_host_start_command(cf.tunnel),
                 note=(
                     f"starts the shared host cloudflared daemon (idempotent, survives "
-                    f"ssh close); log at /var/log/tuxcomp/cloudflared.log"
+                    f"ssh close via termux-wake-lock); log at ~/tuxcomp-logs/cloudflared.log"
                     + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
                 ),
             )
@@ -538,21 +538,26 @@ def _tunnel_host_start_command(tunnel: str | None) -> list[str]:
     would drop other projects' tunnels). Uses the token at
     $HOME/.tuxcomp/tunnel-token if present, otherwise cloudflared's own config
     (~/.cloudflared). `down` does NOT stop it.
+
+    On Android/Termux, termux-wake-lock is acquired first so the process isn't
+    killed by Android's lifecycle manager after the SSH session ends. The log
+    lives under $HOME (not /var/log, which doesn't exist on Termux).
     """
     name_part = f" {_q_sh(tunnel)}" if tunnel else ""
     shell = (
         f"if pgrep -f '[c]loudflared tunnel run' >/dev/null; then "
         f"echo 'host cloudflared already running - leaving it alone'; "
         f"else "
-        f"mkdir -p /var/log/tuxcomp && "
+        f"TERMUX_LOG=\"$HOME/tuxcomp-logs\"; mkdir -p \"$TERMUX_LOG\" && "
+        f"termux-wake-lock 2>/dev/null || true && "
         f"if [ -f \"$HOME/.tuxcomp/tunnel-token\" ]; then "
-        f"  nohup cloudflared tunnel run --token \"$(cat \"$HOME/.tuxcomp/tunnel-token\")\"{name_part} "
-        f"> /var/log/tuxcomp/cloudflared.log 2>&1 & "
+        f"nohup cloudflared tunnel run --token \"$(cat \"$HOME/.tuxcomp/tunnel-token\")\"{name_part} "
+        f"> \"$TERMUX_LOG/cloudflared.log\" 2>&1 & "
         f"else "
-        f"  nohup cloudflared tunnel run{name_part} "
-        f"> /var/log/tuxcomp/cloudflared.log 2>&1 & "
+        f"nohup cloudflared tunnel run{name_part} "
+        f"> \"$TERMUX_LOG/cloudflared.log\" 2>&1 & "
         f"fi; "
-        f"disown; echo 'host cloudflared started (log: /var/log/tuxcomp/cloudflared.log)'; "
+        f"disown; echo 'host cloudflared started (log: $TERMUX_LOG/cloudflared.log)'; "
         f"fi"
     )
     return ["/bin/sh", "-c", shell]
