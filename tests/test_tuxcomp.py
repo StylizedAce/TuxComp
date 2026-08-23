@@ -883,17 +883,6 @@ def test_down_all(tmp_path, monkeypatch, capsys):
     assert len(kills) == 3
 
 
-def test_completion_output(tmp_path, monkeypatch, capsys):
-    """tuxcomp completion prints a script containing subcommands."""
-    from tuxcomp.cli import _cmd_completion, _parse_args
-
-    args = _parse_args(["completion"])
-    assert _cmd_completion(args) == 0
-    out = capsys.readouterr().out
-    assert "tuxcomp" in out
-    assert "complete" in out
-
-
 def test_deploy_uses_default_remote(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
     import subprocess as sp

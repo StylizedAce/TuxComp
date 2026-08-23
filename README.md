@@ -55,7 +55,6 @@ tuxcomp deploy -f docker-compose.yml
 | `tuxcomp rebuild <container>` | Stop + remove + re-up with new code |
 | `tuxcomp deploy -f compose.yml` | Upgrade tuxcomp on target, push files, start stack |
 | `tuxcomp plan -f compose.yml` | Print what would run, without running it |
-| `tuxcomp completion` | Print bash/zsh completion script (tab-completes container names) |
 
 ## Cloudflared
 

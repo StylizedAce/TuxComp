@@ -262,12 +262,6 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
     remote.add_argument("--port", type=int, default=22, help="ssh port (default 22)")
     remote.add_argument("--default", action="store_true", help="make this the default remote")
 
-    sub.add_parser(
-        "completion",
-        parents=[parent],
-        help="print a bash/zsh completion script (source it once in ~/.bashrc or ~/.zshrc)",
-    )
-
     return parser.parse_args(args)
 
 
@@ -1297,67 +1291,6 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     )
 
 
-def _cmd_completion(args: argparse.Namespace) -> int:
-    """Print a bash/zsh completion script. Source it once:
-    bash:  source <(tuxcomp completion)   (or add to ~/.bashrc)
-    zsh:   eval "$(tuxcomp completion)"    (or add to ~/.zshrc)
-    Container names are completed straight from the saved registry
-    (~/.tuxcomp/registry/*.json) - no subprocess calls, so it stays fast
-    and never triggers proot over SSH.
-    """
-    script = r'''_tuxcomp_complete() {
-    local cur prev idx
-    if [ -n "$ZSH_VERSION" ]; then
-        cur="${words[CURRENT]}"
-        prev="${words[CURRENT-1]}"
-        idx="$CURRENT"
-    else
-        cur="${COMP_WORDS[COMP_CWORD]}"
-        prev="${COMP_WORDS[COMP_CWORD-1]}"
-        idx="$COMP_CWORD"
-    fi
-
-    local subcommands="plan up down ps list logs exec stop start rmi rebuild deploy remote completion"
-
-    # First argument: the subcommand itself.
-    if [ "$idx" = "1" ]; then
-        COMPREPLY=( $(compgen -W "$subcommands" -- "$cur") )
-        return 0
-    fi
-
-    case "$prev" in
-        up|down|stop|start|rmi|rebuild|logs|exec)
-            # Container names from the registry dir - fast, no subprocesses.
-            local names
-            names=$(ls "$HOME/.tuxcomp/registry/" 2>/dev/null | sed 's/\.json$//' | tr '\n' ' ')
-            if [ -n "$names" ]; then
-                COMPREPLY=( $(compgen -W "$names" -- "$cur") )
-                return 0
-            fi
-            ;;
-        -f|--file)
-            # Let the shell do file completion for -f/--file.
-            if [ -n "$ZSH_VERSION" ]; then
-                _files
-            else
-                compopt -o default 2>/dev/null
-            fi
-            return 0
-            ;;
-    esac
-    return 0
-}
-
-if [ -n "$ZSH_VERSION" ]; then
-    compdef _tuxcomp_complete tuxcomp
-else
-    complete -F _tuxcomp_complete tuxcomp
-fi
-'''
-    print(script, end="")
-    return 0
-
-
 def main(args: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -1379,7 +1312,6 @@ def main(args: list[str] | None = None) -> int:
         "rebuild": _cmd_rebuild,
         "deploy": _cmd_deploy,
         "remote": _cmd_remote,
-        "completion": _cmd_completion,
     }
     handler = handlers[parsed.command]
     try:
