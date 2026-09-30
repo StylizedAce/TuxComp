@@ -1408,3 +1408,58 @@ def test_rmi_compose_skips_uninstalled(tmp_path, monkeypatch, capsys):
     assert not any(c[1] == "remove" and "socialvibes-demo" in str(c) for c in calls)
     assert _load_registry("socialvibes-api") is None
     assert "removed project services" in out
+
+
+def test_tunnel_token_set_list_clear(tmp_path, monkeypatch, capsys):
+    """tunnel-token persists per container, lists them, and clears them.
+
+    The host-side copy is what reconnects a tunnel after its container is
+    recreated, so it must land outside the container and be owner-only.
+    """
+    from tuxcomp.cli import _cmd_tunnel_token, _parse_args
+
+    monkeypatch.delenv("TUXCOMP_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tokens = tmp_path / ".tuxcomp" / "tokens"
+
+    # nothing saved yet is not an error
+    assert _cmd_tunnel_token(_parse_args(["tunnel-token", "list"])) == 0
+    assert "no tokens saved" in capsys.readouterr().out
+
+    # set writes the token for a named container
+    assert _cmd_tunnel_token(_parse_args(["tunnel-token", "set", "my-tunnel", "--token", "tok-abc"])) == 0
+    saved = tokens / "my-tunnel"
+    assert saved.read_text(encoding="utf-8") == "tok-abc"
+    if os.name == "posix":
+        assert (saved.stat().st_mode & 0o777) == 0o600
+
+    # a second container gets its own file, so two tunnels never share a token
+    assert _cmd_tunnel_token(_parse_args(["tunnel-token", "set", "other-tunnel", "--token", "tok-xyz"])) == 0
+    assert (tokens / "other-tunnel").read_text(encoding="utf-8") == "tok-xyz"
+    assert (tokens / "my-tunnel").read_text(encoding="utf-8") == "tok-abc"
+
+    # list shows every saved container
+    assert _cmd_tunnel_token(_parse_args(["tunnel-token", "list"])) == 0
+    out = capsys.readouterr().out
+    assert "my-tunnel" in out and "other-tunnel" in out
+
+    # clear removes only the named one
+    assert _cmd_tunnel_token(_parse_args(["tunnel-token", "clear", "my-tunnel"])) == 0
+    assert not (tokens / "my-tunnel").exists()
+    assert (tokens / "other-tunnel").exists()
+
+    # clearing something absent is a no-op, not an error
+    assert _cmd_tunnel_token(_parse_args(["tunnel-token", "clear", "my-tunnel"])) == 0
+    assert "no token saved for my-tunnel" in capsys.readouterr().out
+
+
+def test_tunnel_token_set_requires_value(tmp_path, monkeypatch, capsys):
+    """`set` without --token fails loudly instead of saving an empty token."""
+    from tuxcomp.cli import _cmd_tunnel_token, _parse_args
+
+    monkeypatch.delenv("TUXCOMP_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert _cmd_tunnel_token(_parse_args(["tunnel-token", "set", "my-tunnel"])) == 1
+    assert "--token is required" in capsys.readouterr().err
+    assert not (tmp_path / ".tuxcomp" / "tokens" / "my-tunnel").exists()

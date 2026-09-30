@@ -25,7 +25,6 @@ class ComposeError(Exception):
 
 
 _VAR_RE = re.compile(r"\$(\$|\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*)")
-_INT_RE = re.compile(r"^\d+$")
 _DURATION_RE = re.compile(r"^(\d+)(ms|s|m|h)?$")
 
 

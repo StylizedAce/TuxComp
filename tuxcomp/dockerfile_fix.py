@@ -66,12 +66,6 @@ def _split_block(block: str) -> tuple[str, str]:
     return block, ""
 
 
-def _is_run_block(block: str) -> bool:
-    first, _ = _split_block(block)
-    m = _INSTRUCTION_RE.match(first.strip())
-    return bool(m and m.group(1).upper() == "RUN")
-
-
 def _run_body(block: str) -> str | None:
     """Return a RUN block's command body (single line), or None if exec-form."""
     first, rest = _split_block(block)

@@ -670,21 +670,6 @@ def _tunnel_health_command(container: str) -> list[str]:
     return ["proot-distro", "login", container, "--", "/bin/sh", "-c", "pgrep -f '[c]loudflared tunnel run' >/dev/null"]
 
 
-def _tunnel_ensure_command(container: str) -> list[str]:
-    """Non-owning project: ensure the named tunnel container's daemon is running.
-
-    Runs the start script if it exists (container provisioned by an owning
-    project). Never writes a token. Used by projects that declare
-    `cloudflared: { container: X }` without a token.
-    """
-    shell = (
-        f"proot-distro login {container} -- /bin/sh -c "
-        f"'if [ -f /root/.tuxcomp/start-tunnel.sh ]; then /bin/sh /root/.tuxcomp/start-tunnel.sh; "
-        f"else echo \"no tunnel config in {container} - deploy an owning project (with a token) first\"; fi'"
-    )
-    return ["/bin/sh", "-c", shell]
-
-
 def _start_note(service: Service) -> str:
     notes: list[str] = []
     if service.ports:
