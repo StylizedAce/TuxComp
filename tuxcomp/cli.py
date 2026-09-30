@@ -21,6 +21,7 @@ from tuxcomp.planner import (
     down_plan,
     env_args,
     service_start_command,
+    tunnel_start_command,
     volume_dirs_for,
 )
 from tuxcomp.runner import Runner, ServiceState, State
@@ -567,11 +568,9 @@ def _cmd_up(args: argparse.Namespace) -> int:
     # Register the shared cloudflared container so tuxcomp start/stop/down can target it.
     if project.tuxcomp and project.tuxcomp.cloudflared:
         tc = project.tuxcomp.cloudflared.container or "tuxcomp-cloudflared"
-        cloudflared_start = [
-            "proot-distro", "login", tc, "-d", "--",
-            "/usr/local/bin/cloudflared", "tunnel", "run",
-            "--token-file", "/root/.tuxcomp/tunnel-token",
-        ]
+        # Same guarded command the planner uses, so `tuxcomp start` cannot stack
+        # a second connector onto an already-running tunnel either.
+        cloudflared_start = tunnel_start_command(tc)
         _save_registry({
             "container": tc,
             "project": project.name,

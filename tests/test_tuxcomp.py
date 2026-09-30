@@ -208,6 +208,32 @@ def test_plan_cloudflared_named_container(monkeypatch):
         assert not any("tuxcomp-cloudflared" in s.title for s in plan.steps)
 
 
+def test_tunnel_start_is_idempotent(monkeypatch):
+    """The start step must never stack a second connector onto a live tunnel.
+
+    Every deploy used to launch another cloudflared, so Cloudflare showed
+    several replicas for a single device. The command now exits early when a
+    daemon is already running, and only then execs cloudflared.
+    """
+    monkeypatch.setenv("CLOUDFLARED_TOKEN", "test-token-123")
+    project = parse_compose_file(FIXTURES / "v2-tunnel.yml")
+    plan = build_plan(project)
+    start = [s for s in plan.steps if s.kind == "tunnel" and s.title.startswith("start cloudflared")]
+    assert len(start) == 1
+    cmd = start[0].command
+    assert "proot-distro" in cmd and "-d" in cmd
+
+    shell = cmd[-1]
+    # guard first, anchored on the binary path so proot's own wrapper
+    # (whose command line contains "cloudflared") can never match
+    assert "pgrep -f '^/usr/local/bin/cloudflared tunnel run'" in shell
+    assert shell.index("exit 0") < shell.index("exec /usr/local/bin/cloudflared")
+    # still starts the daemon normally
+    assert "exec /usr/local/bin/cloudflared tunnel run --token-file /root/.tuxcomp/tunnel-token" in shell
+    # --logfile kills detached proot sessions - must never come back
+    assert "--logfile" not in shell
+
+
 def test_plan_build_service():
     project = parse_compose_file(FIXTURES / "build.yml")
     plan = build_plan(project)

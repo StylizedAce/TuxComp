@@ -408,11 +408,12 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                 kind="tunnel",
                 service="__tunnel__",
                 title=f"start cloudflared daemon in {tunnel_container}",
-                command=_tunnel_start_command(tunnel_container),
+                command=tunnel_start_command(tunnel_container),
                 note=(
-                    f"starts cloudflared daemon (idempotent, survives ssh close via "
-                    f"proot -d); logs to the session - view with `tuxcomp logs "
-                    f"{tunnel_container}`"
+                    f"starts cloudflared daemon if it is not already running "
+                    f"(idempotent - repeated deploys never stack duplicate connectors; "
+                    f"survives ssh close via proot -d); logs to the session - view with "
+                    f"`tuxcomp logs {tunnel_container}`"
                     + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
                 ),
             )
@@ -634,24 +635,34 @@ def _tunnel_token_ensure_command(container: str, token: str | None) -> list[str]
     return ["/bin/sh", "-c", shell]
 
 
-def _tunnel_start_command(container: str) -> list[str]:
-    """Start cloudflared as the container's foreground process.
+def tunnel_start_command(container: str) -> list[str]:
+    """Start cloudflared as the container's foreground process, exactly once.
 
     The -d flag detaches the proot session from the terminal, but the
     container stays alive as long as cloudflared runs. This is fundamentally
     more robust than background-job approaches: no nohup, no disown, no
     orphan risk — the container lifecycle IS cloudflared's lifecycle.
 
+    Idempotent: when a daemon is already running the step is a no-op. Without
+    that guard every `tuxcomp up`/`rebuild` stacked another connector onto the
+    same tunnel, so Cloudflare showed several replicas for one device. The
+    guard is anchored on the binary path so it can never match proot's own
+    wrapper, whose command line also contains the word "cloudflared".
+
+    If the binary was refreshed, the install step has already stopped the old
+    daemon, so this still brings the tunnel up on the new version.
+
     IMPORTANT: do NOT pass --logfile here. In detached proot sessions on
     Termux, cloudflared exits immediately when asked to open a log file
     (the redirect fails and the process dies in ~2s). Without --logfile it
     survives and logs to the session (view via `tuxcomp logs <container>`).
     """
-    return [
-        "proot-distro", "login", container, "-d", "--",
-        "/usr/local/bin/cloudflared", "tunnel", "run",
-        "--token-file", "/root/.tuxcomp/tunnel-token",
-    ]
+    shell = (
+        f"if pgrep -f '^/usr/local/bin/cloudflared tunnel run' >/dev/null 2>&1; then "
+        f"echo 'cloudflared already running - not starting a second one'; exit 0; fi; "
+        f"exec /usr/local/bin/cloudflared tunnel run --token-file /root/.tuxcomp/tunnel-token"
+    )
+    return ["proot-distro", "login", container, "-d", "--", "/bin/sh", "-c", shell]
 
 
 def _tunnel_health_command(container: str) -> list[str]:
