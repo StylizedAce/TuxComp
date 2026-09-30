@@ -171,8 +171,8 @@ def test_plan_cloudflared(monkeypatch):
     project = parse_compose_file(FIXTURES / "v2-tunnel.yml")
     plan = build_plan(project)
     tunnel = [s for s in plan.steps if s.kind == "tunnel"]
-    # ensure container (install), install binary, write token, start daemon
-    assert len(tunnel) == 3
+    # ensure container (install), install binary, write token, verify token, start daemon
+    assert len(tunnel) == 4
     assert any("cloudflared" in str(s.command) for s in tunnel)
     assert any("tunnel-token" in str(s.command) for s in tunnel)
     assert any("cloudflared" in str(s.command) and "tunnel" in str(s.command) and "run" in str(s.command) for s in tunnel)

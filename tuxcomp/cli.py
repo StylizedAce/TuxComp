@@ -262,6 +262,18 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
     remote.add_argument("--port", type=int, default=22, help="ssh port (default 22)")
     remote.add_argument("--default", action="store_true", help="make this the default remote")
 
+    tunnel_token = sub.add_parser(
+        "tunnel-token",
+        parents=[parent],
+        help="manage cloudflared tunnel tokens (list, clear, set)",
+    )
+    tunnel_token.add_argument(
+        "action", choices=["list", "clear", "set"],
+        help="list: show saved tokens; clear: remove token for a container; set: write a token for a container",
+    )
+    tunnel_token.add_argument("container", nargs="?", help="container name (required for clear/set; default: tuxcomp-cloudflared)")
+    tunnel_token.add_argument("--token", default=None, help="token value (required for set)")
+
     return parser.parse_args(args)
 
 
@@ -1291,6 +1303,58 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     )
 
 
+def _tokens_dir() -> str:
+    return os.path.join(_tux_root(), "tokens")
+
+
+def _token_path(container: str) -> str:
+    return os.path.join(_tokens_dir(), container)
+
+
+def _cmd_tunnel_token(args: argparse.Namespace) -> int:
+    """Manage cloudflared tunnel tokens stored on the host filesystem."""
+    tokens_dir = _tokens_dir()
+
+    if args.action == "list":
+        if not os.path.isdir(tokens_dir):
+            print("no tokens saved")
+            return 0
+        entries = sorted(Path(tokens_dir).iterdir())
+        if not entries:
+            print("no tokens saved")
+            return 0
+        for entry in entries:
+            if entry.is_file():
+                size = entry.stat().st_size
+                print(f"  {entry.name}  ({size} bytes)")
+        return 0
+
+    container = args.container or "tuxcomp-cloudflared"
+
+    if args.action == "clear":
+        path = _token_path(container)
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"cleared token for {container}")
+        else:
+            print(f"no token saved for {container}")
+        return 0
+
+    if args.action == "set":
+        token = args.token
+        if not token:
+            print("error: --token is required for 'set'", file=sys.stderr)
+            return 1
+        os.makedirs(tokens_dir, exist_ok=True)
+        path = _token_path(container)
+        Path(path).write_text(token, encoding="utf-8")
+        os.chmod(path, 0o600)
+        print(f"token saved for {container} at {path}")
+        return 0
+
+    return 1
+
+
 def main(args: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -1312,6 +1376,7 @@ def main(args: list[str] | None = None) -> int:
         "rebuild": _cmd_rebuild,
         "deploy": _cmd_deploy,
         "remote": _cmd_remote,
+        "tunnel-token": _cmd_tunnel_token,
     }
     handler = handlers[parsed.command]
     try:

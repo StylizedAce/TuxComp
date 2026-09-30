@@ -369,8 +369,11 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                 title=f"install cloudflared binary in {tunnel_container}",
                 command=_tunnel_install_command(tunnel_container),
                 note=(
-                    f"downloads cloudflared arm64 ({CLOUDFLARED_ARM64_URL}) into "
-                    f"proot container {tunnel_container} (DNS works inside proot)"
+                    f"installs cloudflared arm64 ({CLOUDFLARED_ARM64_URL}) into "
+                    f"proot container {tunnel_container} (DNS works inside proot), "
+                    f"replacing it when a newer release is out - a stale connector "
+                    f"stays alive but drops all traffic, so it is version-checked "
+                    f"on every deploy"
                 ),
             )
         )
@@ -388,6 +391,18 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                     ),
                 )
             )
+        steps.append(
+            Step(
+                kind="tunnel",
+                service="__tunnel__",
+                title=f"verify tunnel token in {tunnel_container}",
+                command=_tunnel_token_ensure_command(tunnel_container, cf.token),
+                note=(
+                    "checks that the token file exists inside the container; "
+                    "rewrites it if missing (e.g. after container recreation)"
+                ),
+            )
+        )
         steps.append(
             Step(
                 kind="tunnel",
@@ -516,23 +531,107 @@ def _hosts_command(project: Project, active: list[str], container: str) -> list[
 
 
 def _tunnel_install_command(container: str) -> list[str]:
+    """Install the cloudflared binary, refreshing it when a newer release exists.
+
+    A connector that has gone stale keeps its process alive while silently
+    dropping every connection, so the process-alive health check keeps passing
+    while all public hostnames hang. Comparing the installed version against the
+    latest GitHub release on every deploy keeps it fresh.
+
+    The download lands on a temp path and is only swapped in once it reports a
+    version, so a failed or truncated download can never break a working tunnel.
+    If GitHub cannot be reached an already-installed binary is kept as-is. When
+    the binary is replaced the running daemon is stopped, so the following
+    "start cloudflared daemon" step brings the tunnel up on the new version.
+    """
     shell = (
-        f"test -x /usr/local/bin/cloudflared || "
-        f"(curl -fsSL -o /usr/local/bin/cloudflared {CLOUDFLARED_ARM64_URL} && "
-        f"chmod +x /usr/local/bin/cloudflared)"
+        f"BIN=/usr/local/bin/cloudflared; "
+        f"URL={CLOUDFLARED_ARM64_URL}; "
+        # Installed version, or the literal "unknown" when there is no binary.
+        f"cur=unknown; "
+        f'if [ -x "$BIN" ]; then '
+        f'cur=$("$BIN" --version 2>/dev/null | '
+        f"sed -n 's/^cloudflared version \\([^ ]*\\).*/\\1/p'); "
+        f'[ -n "$cur" ] || cur=unknown; fi; '
+        # Latest published tag, straight from the releases API.
+        f"latest=$(curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest "
+        f"2>/dev/null | sed -n 's/.*\"tag_name\"[^\"]*\"\\([^\"]*\\)\".*/\\1/p' | sed 's/^v//'); "
+        f'if [ -z "$latest" ]; then '
+        f'if [ -x "$BIN" ]; then '
+        f'echo "cloudflared $cur kept - could not check the latest release"; exit 0; fi; '
+        f'echo "cloudflared: cannot reach GitHub to download the binary" >&2; exit 1; fi; '
+        f'if [ -x "$BIN" ] && [ "$cur" = "$latest" ]; then '
+        f'echo "cloudflared $cur is up to date"; exit 0; fi; '
+        f'if curl -fsSL -o "$BIN.new" "$URL" && chmod +x "$BIN.new" '
+        f'&& "$BIN.new" --version >/dev/null 2>&1 && mv -f "$BIN.new" "$BIN"; then '
+        f'echo "cloudflared $cur -> $latest"; '
+        # Anchor on the binary path so pkill cannot match proot\'s own wrapper,
+        # which also contains the string "cloudflared".
+        f"pkill -f '^/usr/local/bin/cloudflared' >/dev/null 2>&1 || true; sleep 2; "
+        f'else rm -f "$BIN.new"; '
+        f'echo "cloudflared download failed - keeping $cur" >&2; exit 1; fi'
     )
     return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
 
 
+def _host_token_path(container: str) -> str:
+    """Per-container host token path: ~/.tuxcomp/tokens/<container>."""
+    return f"/data/data/com.termux/files/home/.tuxcomp/tokens/{container}"
+
+
 def _tunnel_token_command(container: str, token: str) -> list[str]:
-    """Write the tunnel token inside the container (always overwrite)."""
+    """Write the tunnel token inside the container AND persist to host.
+
+    Two writes happen:
+      1. Inside the container at /root/.tuxcomp/tunnel-token (cloudflared reads this)
+      2. On the host at ~/.tuxcomp/tokens/<container> (survives container rmi)
+    """
+    host_path = _host_token_path(container)
     shell = (
         f"mkdir -p /root/.tuxcomp && "
         f"printf '%s' '{token}' > /root/.tuxcomp/tunnel-token && "
         f"chmod 600 /root/.tuxcomp/tunnel-token && "
-        f"echo 'token written to /root/.tuxcomp/tunnel-token'"
+        f"mkdir -p $(dirname {host_path}) && "
+        f"printf '%s' '{token}' > {host_path} && "
+        f"chmod 600 {host_path} && "
+        f"echo 'token written to container + host ({host_path})'"
     )
     return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
+
+
+def _tunnel_token_ensure_command(container: str, token: str | None) -> list[str]:
+    """Verify the token file exists inside the container; restore if missing.
+
+    Runs on the Termux host (not inside the container) so it can access the
+    host filesystem at ~/.tuxcomp/tokens/<container> and copy it in.
+    Handles the case where the container was recreated (e.g. rmi + ensure)
+    and lost its filesystem state.
+
+    When the owning project's token is known it's passed in and written
+    directly.  Otherwise the per-container host file is used as the source
+    of truth.
+    """
+    host_path = _host_token_path(container)
+    if token:
+        # Token known: idempotent write (skip if file already present).
+        shell = (
+            f"proot-distro login {container} -- test -f /root/.tuxcomp/tunnel-token || "
+            f"(proot-distro login {container} -- sh -c "
+            f"\"mkdir -p /root/.tuxcomp && printf '%s' '{token}' > /root/.tuxcomp/tunnel-token && "
+            f"chmod 600 /root/.tuxcomp/tunnel-token\" && "
+            f"echo 'token rewritten (was missing)')"
+        )
+    else:
+        # No inline token: copy from per-container host file if present.
+        shell = (
+            f"proot-distro login {container} -- test -f /root/.tuxcomp/tunnel-token || "
+            f"(test -f {host_path} && "
+            f"cat {host_path} | proot-distro login {container} -- sh -c "
+            f"\"mkdir -p /root/.tuxcomp && cat > /root/.tuxcomp/tunnel-token && chmod 600 /root/.tuxcomp/tunnel-token\" && "
+            f"echo 'token restored from host ({host_path})') || "
+            f"echo 'WARN: tunnel-token missing — deploy the owning project (with a token) first'"
+        )
+    return ["/bin/sh", "-c", shell]
 
 
 def _tunnel_start_command(container: str) -> list[str]:
