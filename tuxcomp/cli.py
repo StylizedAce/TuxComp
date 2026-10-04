@@ -223,6 +223,13 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
     )
     doctor.add_argument("--json", action="store_true", help="machine-readable output")
 
+    wake = sub.add_parser(
+        "wake",
+        parents=[parent],
+        help="manage the Termux wake lock (keeps Android from freezing the app)",
+    )
+    wake.add_argument("action", choices=["on", "off", "status"])
+
     logs = sub.add_parser("logs", parents=[parent], help="show service/container logs")
     logs.add_argument("service", nargs="?", help="container or service name (default: all services with -f)")
     logs.add_argument("-n", "--lines", type=int, default=30, help="number of tail lines (default: 30)")
@@ -593,6 +600,10 @@ def _cmd_up(args: argparse.Namespace) -> int:
         })
         print(f"registered tunnel container {tc}")
 
+    if project.tuxcomp and project.tuxcomp.keep_awake:
+        if _acquire_wake_lock() != 0:
+            print("warning: could not acquire the wake lock; services keep running", file=sys.stderr)
+
     return 0
 
 
@@ -613,6 +624,7 @@ def _cmd_down(args: argparse.Namespace) -> int:
         if failed:
             print(f"error: {failed} container(s) failed to stop", file=sys.stderr)
             return 1
+        _release_wake_lock_if_idle()
         return 0
     try:
         project = _load_project(args)
@@ -636,18 +648,84 @@ def _cmd_down(args: argparse.Namespace) -> int:
     if failed:
         return 1
     print("stopped all services")
+    _release_wake_lock_if_idle()
     return 0
 
 
 def _stop_container(container: str) -> int:
     try:
-        proc = subprocess.run([_proot(), "kill", container])
+        proc = subprocess.run([_proot(), "kill", container], check=False)
         if proc.returncode == 0:
             print(f"stopped {container}")
         return proc.returncode
     except OSError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+
+def _wake_marker_path() -> str:
+    return os.path.join(_tux_root(), "wake.state")
+
+
+def _wake_lock_available() -> bool:
+    return shutil.which("termux-wake-lock") is not None
+
+
+def _acquire_wake_lock() -> int:
+    if os.path.exists(_wake_marker_path()):
+        print("wake lock already held by tuxcomp")
+        return 0
+    if not _wake_lock_available():
+        print("error: termux-wake-lock not found - is this Termux on Android?", file=sys.stderr)
+        return 1
+    try:
+        proc = subprocess.run(["termux-wake-lock"], check=False)
+    except OSError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if proc.returncode != 0:
+        print(f"error: termux-wake-lock failed (exit {proc.returncode})", file=sys.stderr)
+        return 1
+    os.makedirs(_tux_root(), exist_ok=True)
+    Path(_wake_marker_path()).write_text(
+        json.dumps({"acquired_at": datetime.datetime.now().isoformat(timespec="seconds")}),
+        encoding="utf-8",
+    )
+    print("wake lock acquired (termux-wake-lock)")
+    return 0
+
+
+def _release_wake_lock() -> int:
+    path = _wake_marker_path()
+    if not os.path.exists(path):
+        print("wake lock not held by tuxcomp")
+        return 0
+    if _wake_lock_available():
+        try:
+            subprocess.run(["termux-wake-unlock"], check=False)
+        except OSError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    os.remove(path)
+    print("wake lock released (termux-wake-unlock)")
+    return 0
+
+
+def _release_wake_lock_if_idle() -> None:
+    """Release a tuxcomp-acquired wake lock once no container is running."""
+    if os.path.exists(_wake_marker_path()) and not _running_containers():
+        _release_wake_lock()
+
+
+def _cmd_wake(args: argparse.Namespace) -> int:
+    if args.action == "on":
+        return _acquire_wake_lock()
+    if args.action == "off":
+        return _release_wake_lock()
+    held = os.path.exists(_wake_marker_path())
+    print(f"wake lock: {'held by tuxcomp' if held else 'not held'}")
+    print(f"termux-wake-lock: {'available' if _wake_lock_available() else 'missing'}")
+    return 0
 
 
 def _installed_containers() -> list[str]:
@@ -842,7 +920,10 @@ def _cmd_stop(args: argparse.Namespace) -> int:
         if not args.container:
             print("error: tuxcomp stop <container>", file=sys.stderr)
             return 1
-        return _stop_container(args.container)
+        rc = _stop_container(args.container)
+        if rc == 0:
+            _release_wake_lock_if_idle()
+        return rc
     return _cmd_down(args)
 
 
@@ -1389,6 +1470,7 @@ def main(args: list[str] | None = None) -> int:
         "ps": _cmd_ps,
         "list": _cmd_list,
         "doctor": _cmd_doctor,
+        "wake": _cmd_wake,
         "logs": _cmd_logs,
         "exec": _cmd_exec,
         "stop": _cmd_stop,

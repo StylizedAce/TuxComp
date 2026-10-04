@@ -84,6 +84,7 @@ class ProjectTuxComp:
 
     cloudflared: Optional[CloudflaredConfig] = None
     deploy: Optional[DeployConfig] = None
+    keep_awake: bool = False
 
 
 @dataclass

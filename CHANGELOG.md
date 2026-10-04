@@ -4,6 +4,15 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.19 — 2026-10-05
+
+Status: UNPUSHED — awaiting confirmation
+
+- Add `tuxcomp wake on|off|status`: manages the Termux wake lock with a marker
+  file so `down`/`stop` release only locks TuxComp acquired.
+- Add `x-tuxcomp.keep_awake: true`: acquire the wake lock after `up`, release
+  it when the last registered container stops.
+
 ## v0.8.18 — 2026-10-05
 
 Status: UNPUSHED — awaiting confirmation
