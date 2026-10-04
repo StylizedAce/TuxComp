@@ -130,10 +130,30 @@ Tuning that mattered, in order of impact:
 4. Downscale images (`OLLAMA_MAX_IMAGE_DIM=512`).
 5. `"think": false` and a small output cap with a safe upper bound.
 
-A modern phone with a current Vulkan driver (e.g. Mali-G610+) is worth
-testing for GPU inference with a native Termux llama.cpp build; the P30's
-Mali-G76 (Vulkan 1.1, 2018 driver) is not a candidate, and Ollama has no
-Android GPU path at all.
+A modern phone with a current Vulkan driver is worth testing for GPU
+inference, but the P30's Mali-G76 (Vulkan 1.1, 2018 driver) was tested
+exhaustively and cannot work:
+
+- Native Termux has real GPU packages now: `ollama-backend-vulkan`,
+  `llama-cpp-backend-vulkan`, `llama-cpp-backend-opencl`.
+- Native Ollama with the Vulkan backend **detects the Mali-G76**
+  (`library=Vulkan name=Vulkan0`), then fails at model load:
+  `device Vulkan0 does not support 16-bit storage` → `Unsupported device`.
+  `GGML_VK_DISABLE_F16=1` does not bypass it.
+- Native llama.cpp Vulkan fails the same way. Registering the Mali blob as an
+  OpenCL ICD makes the platform enumerate, but ggml-opencl rejects it:
+  `unsupported GPU 'Mali-G76'`.
+- A glibc proot can never use this GPU at all: the Android ICD depends on
+  Bionic (`libion.so`), which a Linux process cannot load. Mesa panfrost is
+  not an option either (Android has no `/dev/dri`; it uses the ARM kbase
+  driver).
+
+Conclusion for TuxComp: GPU is not a proot/container feature on this class of
+hardware — no compose key or rootfs file can add a Vulkan feature the driver
+lacks. On newer GPUs (Mali Valhall G57+/G610+, Adreno) the tested path is a
+**native** Termux service (`ollama-backend-vulkan` or llama.cpp with
+`-ngl 99`), outside proot; that is documented here rather than implemented as
+a TuxComp command so the CLI stays free of device-specific machinery.
 
 ---
 

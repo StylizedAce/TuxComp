@@ -4,6 +4,16 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.24 — 2026-10-05
+
+Status: UNPUSHED — awaiting confirmation
+
+- Docs: record the exhaustively tested Mali-G76 GPU results (native
+  `ollama-backend-vulkan` detects the GPU but the driver lacks 16-bit storage;
+  ggml-opencl rejects Mali; glibc proot cannot load the Bionic ICD). Documents
+  the native-only GPU path for newer phones instead of adding device-specific
+  commands to the CLI.
+
 ## v0.8.23 — 2026-10-05
 
 Status: UNPUSHED — awaiting confirmation
