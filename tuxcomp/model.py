@@ -46,6 +46,7 @@ class ServiceTuxComp:
     from_golden: Optional[str] = None
     reuse: Optional[str] = None
     raw: bool = False
+    threads: Optional[str] = None
 
 
 @dataclass

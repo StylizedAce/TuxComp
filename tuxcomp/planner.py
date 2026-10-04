@@ -131,6 +131,7 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
         cmd = ["proot-distro", "run", container]
         cmd += bind_args_with_notes(service)
         cmd += env_args(service)
+        cmd += resource_env(service)
         if detach:
             cmd.append("-d")
         if service.command:
@@ -451,6 +452,7 @@ def service_start_command(
     cmd = ["proot-distro", "login", container]
     cmd += bind_args(project, service, volume_dirs_for(project))
     cmd += env_args(service)
+    cmd += resource_env(service)
     if detach:
         cmd.append("-d")
     cmd.append("--")
@@ -482,6 +484,60 @@ def env_args(service: Service) -> list[str]:
     for k, v in service.environment.items():
         args.extend(["-e", f"{k}={v}"])
     return args
+
+
+#: Env vars common runtimes read for their worker/thread pool sizes.
+THREAD_ENV_KEYS = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "UV_THREADPOOL_SIZE",
+)
+
+
+def _allowed_cpus() -> int:
+    """CPUs this process may actually use (Android cpuset aware)."""
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:  # pragma: no cover - non-Linux dev machines
+        return max(1, os.cpu_count() or 1)
+
+
+def resource_env(service: Service) -> list[str]:
+    """`-e` args from a service's `x-tuxcomp.resources.threads`.
+
+    `auto` resolves against the CPUs Android actually allows, so runtimes
+    stop spawning more threads than the cpuset can run (a measured ~50x
+    slowdown on Ollama before this was handled at the app level).
+    """
+    tux = service.tuxcomp
+    if not tux or not tux.threads:
+        return []
+    value = str(_allowed_cpus()) if tux.threads == "auto" else tux.threads
+    args: list[str] = []
+    for key in THREAD_ENV_KEYS:
+        args.extend(["-e", f"{key}={value}"])
+    return args
+
+
+def resource_warnings(project: Project) -> list[str]:
+    """Warn when an explicit thread request exceeds the allowed CPUs."""
+    allowed = _allowed_cpus()
+    warnings: list[str] = []
+    for service in project.service_list():
+        tux = service.tuxcomp
+        if not tux or not tux.threads or tux.threads == "auto":
+            continue
+        requested = int(tux.threads)
+        if requested > allowed:
+            warnings.append(
+                f"service '{service.name}' requests {requested} threads but only "
+                f"{allowed} CPUs are allowed while Termux is backgrounded; "
+                f"keep the screen on with Termux visible for full speed"
+            )
+    return warnings
 
 
 def bind_args(project: Project, service: Service, volume_dirs: dict[str, str]) -> list[str]:

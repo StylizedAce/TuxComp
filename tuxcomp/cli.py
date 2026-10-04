@@ -20,6 +20,7 @@ from tuxcomp.planner import (
     build_plan,
     down_plan,
     env_args,
+    resource_warnings,
     service_start_command,
     tunnel_start_command,
     volume_dirs_for,
@@ -532,6 +533,9 @@ def _cmd_up(args: argparse.Namespace) -> int:
     conflict = _check_port_conflicts(project, force=args.force_ports)
     if conflict:
         return conflict
+
+    for warning in resource_warnings(project):
+        print(f"warning: {warning}", file=sys.stderr)
 
     runner = Runner(dry_run=False, verbose=args.verbose, proot=_proot())
     results = runner.run(plan, health_timeout=args.health_timeout)

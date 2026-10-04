@@ -204,6 +204,18 @@ def _parse_tuxcomp_service(raw: dict) -> ServiceTuxComp | None:
     packages = ext.get("packages") or []
     if isinstance(packages, str):
         packages = [packages]
+    resources = ext.get("resources") or {}
+    threads = None
+    if isinstance(resources, dict) and resources.get("threads") is not None:
+        value = resources["threads"]
+        if isinstance(value, bool):
+            raise ComposeError("x-tuxcomp.resources.threads must be 'auto' or an integer")
+        text = str(value).strip()
+        if text != "auto":
+            if not text.isdigit() or int(text) < 1:
+                raise ComposeError("x-tuxcomp.resources.threads must be 'auto' or a positive integer")
+            text = str(int(text))
+        threads = text
     return ServiceTuxComp(
         role=str(ext["role"]) if ext.get("role") else None,
         distro=str(ext["distro"]) if ext.get("distro") else None,
@@ -211,6 +223,7 @@ def _parse_tuxcomp_service(raw: dict) -> ServiceTuxComp | None:
         from_golden=str(ext["from_golden"]) if ext.get("from_golden") else None,
         reuse=str(ext["reuse"]) if ext.get("reuse") else None,
         raw=bool(ext.get("raw", False)),
+        threads=threads,
     )
 
 

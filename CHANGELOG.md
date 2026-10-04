@@ -4,6 +4,16 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.21 — 2026-10-05
+
+Status: UNPUSHED — awaiting confirmation
+
+- Add `x-tuxcomp.resources.threads: auto|N` per service: injects common
+  thread-pool env vars (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
+  `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`,
+  `UV_THREADPOOL_SIZE`) resolved against the CPUs Android actually allows.
+- Warn at `up` when an explicit thread request exceeds the allowed CPUs.
+
 ## v0.8.20 — 2026-10-05
 
 Status: UNPUSHED — awaiting confirmation
