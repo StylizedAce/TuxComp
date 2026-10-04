@@ -4,6 +4,15 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.22 — 2026-10-05
+
+Status: UNPUSHED — awaiting confirmation
+
+- Add `tuxcomp serve`: supervises registered containers, restarts dead
+  sessions with exponential backoff (2s up to 5min), re-runs health checks,
+  and can hold the wake lock while supervising (`--wake-lock`). `--once`
+  runs a single sweep for cron/tests.
+
 ## v0.8.21 — 2026-10-05
 
 Status: UNPUSHED — awaiting confirmation

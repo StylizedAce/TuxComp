@@ -238,6 +238,20 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
     )
     setup.add_argument("--json", action="store_true", help="machine-readable output")
 
+    serve = sub.add_parser(
+        "serve",
+        parents=[parent],
+        help="supervise registered containers and restart dead ones",
+    )
+    serve.add_argument("--interval", type=int, default=15, help="seconds between sweeps (default: 15)")
+    serve.add_argument("--once", action="store_true", help="run a single sweep and exit")
+    serve.add_argument("--health-timeout", type=int, default=120)
+    serve.add_argument(
+        "--wake-lock",
+        action="store_true",
+        help="hold the Termux wake lock while supervising",
+    )
+
     logs = sub.add_parser("logs", parents=[parent], help="show service/container logs")
     logs.add_argument("service", nargs="?", help="container or service name (default: all services with -f)")
     logs.add_argument("-n", "--lines", type=int, default=30, help="number of tail lines (default: 30)")
@@ -954,19 +968,14 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     return _cmd_down(args)
 
 
-def _cmd_start(args: argparse.Namespace) -> int:
-    entry = _load_registry(args.container)
-    if not entry:
-        print(
-            f"error: no saved config for '{args.container}' - run 'tuxcomp up -f <compose>' once first",
-            file=sys.stderr,
-        )
-        return 1
+def _start_from_entry(entry: dict, health_timeout: int) -> int:
+    """Start (or restart) a container from its saved registry entry."""
+    container = entry["container"]
     cmd = [_proot() if c == "proot-distro" else c for c in entry["start"]]
-    print(f"start {args.container}")
+    print(f"start {container}")
     print(f"  $ {' '.join(cmd)}")
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -976,30 +985,98 @@ def _cmd_start(args: argparse.Namespace) -> int:
 
     health = entry.get("health")
     if health:
-        deadline = time.time() + args.health_timeout
+        deadline = time.time() + health_timeout
         last = ""
         while time.time() < deadline:
             try:
-                probe = subprocess.run(health, capture_output=True, text=True, timeout=30)
+                probe = subprocess.run(health, capture_output=True, text=True, timeout=30, check=False)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 last = str(exc)
                 time.sleep(2)
                 continue
             if probe.returncode == 0:
-                print(f"healthy ({args.container})")
+                print(f"healthy ({container})")
                 break
             last = (probe.stdout + probe.stderr).strip()
             time.sleep(2)
         else:
-            print(f"error: not healthy after {args.health_timeout}s: {last}", file=sys.stderr)
+            print(f"error: not healthy after {health_timeout}s: {last}", file=sys.stderr)
             return 1
 
     if entry.get("tunnel"):
         # Tunnel container: cloudflared IS the main process (foreground via
         # proot-distro login -d), so there is nothing extra to restart — the
         # start command already ran it.  Just log it.
-        print(f"tunnel container {entry.get('tunnel_container', args.container)} restarted via start command")
+        print(f"tunnel container {entry.get('tunnel_container', container)} restarted via start command")
     return 0
+
+
+def _cmd_start(args: argparse.Namespace) -> int:
+    entry = _load_registry(args.container)
+    if not entry:
+        print(
+            f"error: no saved config for '{args.container}' - run 'tuxcomp up -f <compose>' once first",
+            file=sys.stderr,
+        )
+        return 1
+    return _start_from_entry(entry, args.health_timeout)
+
+
+def _backoff_delay(failures: int) -> int:
+    """Restart backoff in seconds: 1, 2, 4, ... capped at 5 minutes."""
+    return min(300, 2 ** min(failures, 20))
+
+
+def _stamp() -> str:
+    return time.strftime("%H:%M:%S")
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    if args.wake_lock and _acquire_wake_lock() != 0:
+        print("warning: continuing without the wake lock", file=sys.stderr)
+    failures: dict[str, int] = {}
+    backoff: dict[str, float] = {}
+    try:
+        while True:
+            sweep_start = time.time()
+            names = _registered_containers()
+            if not names:
+                print("no registered containers to supervise")
+                if args.once:
+                    return 0
+            running = _running_containers()
+            for name in names:
+                if name in running:
+                    failures.pop(name, None)
+                    backoff.pop(name, None)
+                    continue
+                if time.time() < backoff.get(name, 0):
+                    continue
+                entry = _load_registry(name)
+                if not entry:
+                    continue
+                print(f"[{_stamp()}] {name} is down - restarting")
+                if _start_from_entry(entry, args.health_timeout) == 0:
+                    failures.pop(name, None)
+                    backoff.pop(name, None)
+                else:
+                    failures[name] = failures.get(name, 0) + 1
+                    delay = _backoff_delay(failures[name])
+                    backoff[name] = time.time() + delay
+                    print(
+                        f"[{_stamp()}] {name} restart failed ({failures[name]}x); "
+                        f"next attempt in {delay}s",
+                        file=sys.stderr,
+                    )
+            if args.once:
+                return 0
+            time.sleep(max(0.0, args.interval - (time.time() - sweep_start)))
+    except KeyboardInterrupt:
+        print("supervisor stopped")
+        return 0
+    finally:
+        if args.wake_lock:
+            _release_wake_lock()
 
 
 def _ask_yes(question: str) -> bool:
@@ -1499,6 +1576,7 @@ def main(args: list[str] | None = None) -> int:
         "doctor": _cmd_doctor,
         "wake": _cmd_wake,
         "setup": _cmd_setup,
+        "serve": _cmd_serve,
         "logs": _cmd_logs,
         "exec": _cmd_exec,
         "stop": _cmd_stop,
