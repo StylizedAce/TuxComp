@@ -216,6 +216,13 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
 
     sub.add_parser("list", parents=[parent], help="list installed proot-distro containers")
 
+    doctor = sub.add_parser(
+        "doctor",
+        parents=[parent],
+        help="show phone/app resource status and warnings (read-only)",
+    )
+    doctor.add_argument("--json", action="store_true", help="machine-readable output")
+
     logs = sub.add_parser("logs", parents=[parent], help="show service/container logs")
     logs.add_argument("service", nargs="?", help="container or service name (default: all services with -f)")
     logs.add_argument("-n", "--lines", type=int, default=30, help="number of tail lines (default: 30)")
@@ -719,6 +726,20 @@ def _cmd_list(args: argparse.Namespace) -> int:
     except OSError as exc:
         print(f"error: cannot run {_proot()}: {exc}", file=sys.stderr)
         return 1
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    from tuxcomp import doctor as doctor_mod
+
+    data = doctor_mod.collect_device(
+        installed=_installed_containers(),
+        running=sorted(_running_containers()),
+    )
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        print(doctor_mod.format_report(data))
+    return 0
 
 
 def _log_path(container: str) -> str:
@@ -1367,6 +1388,7 @@ def main(args: list[str] | None = None) -> int:
         "down": _cmd_down,
         "ps": _cmd_ps,
         "list": _cmd_list,
+        "doctor": _cmd_doctor,
         "logs": _cmd_logs,
         "exec": _cmd_exec,
         "stop": _cmd_stop,

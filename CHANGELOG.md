@@ -4,6 +4,15 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.18 — 2026-10-05
+
+Status: UNPUSHED — awaiting confirmation
+
+- Add `tuxcomp doctor`: read-only status for phone containers — cpuset group,
+  allowed vs total CPUs and locked clusters, governor, memory/swap, per-UID
+  process count vs the Android 12+ phantom budget, wake-lock state, container
+  counts, orphan proot sessions, and warnings. `--json` for scripting.
+
 ## v0.8.17 — 2026-10-05
 
 Status: UNPUSHED — awaiting confirmation
