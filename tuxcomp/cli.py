@@ -234,9 +234,24 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
     setup = sub.add_parser(
         "setup",
         parents=[parent],
-        help="pass/fail serving posture check (exit 1 until complete)",
+        help="phone posture check; --adb applies host-side Android tweaks (dry-run by default)",
     )
     setup.add_argument("--json", action="store_true", help="machine-readable output")
+    setup.add_argument(
+        "--adb",
+        action="store_true",
+        help="host-side mode: apply the Termux background/phantom tweaks through adb",
+    )
+    setup.add_argument(
+        "--apply",
+        action="store_true",
+        help="with --adb: actually run the commands (default: dry-run)",
+    )
+    setup.add_argument(
+        "--restart-termux",
+        action="store_true",
+        help="with --adb --apply: force-stop Termux after applying (stops all containers)",
+    )
 
     serve = sub.add_parser(
         "serve",
@@ -754,6 +769,14 @@ def _cmd_wake(args: argparse.Namespace) -> int:
 
 
 def _cmd_setup(args: argparse.Namespace) -> int:
+    if args.adb:
+        from tuxcomp.adb import setup_adb
+
+        return setup_adb(apply_changes=args.apply, restart_termux=args.restart_termux)
+    if args.apply or args.restart_termux:
+        print("error: --apply and --restart-termux require --adb", file=sys.stderr)
+        return 1
+
     from tuxcomp import doctor as doctor_mod
     from tuxcomp import posture
 
@@ -1458,7 +1481,7 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
             )
             home = home_probe.stdout.strip()
             if not home:
-                home = f"/data/data/com.termux/files/home"
+                home = "/data/data/com.termux/files/home"
             remote_root = home + remote_root[1:]
         except (OSError, subprocess.TimeoutExpired) as exc:
             print(f"error: could not resolve remote home: {exc}", file=sys.stderr)
