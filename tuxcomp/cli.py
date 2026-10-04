@@ -230,6 +230,13 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
     )
     wake.add_argument("action", choices=["on", "off", "status"])
 
+    setup = sub.add_parser(
+        "setup",
+        parents=[parent],
+        help="pass/fail serving posture check (exit 1 until complete)",
+    )
+    setup.add_argument("--json", action="store_true", help="machine-readable output")
+
     logs = sub.add_parser("logs", parents=[parent], help="show service/container logs")
     logs.add_argument("service", nargs="?", help="container or service name (default: all services with -f)")
     logs.add_argument("-n", "--lines", type=int, default=30, help="number of tail lines (default: 30)")
@@ -726,6 +733,22 @@ def _cmd_wake(args: argparse.Namespace) -> int:
     print(f"wake lock: {'held by tuxcomp' if held else 'not held'}")
     print(f"termux-wake-lock: {'available' if _wake_lock_available() else 'missing'}")
     return 0
+
+
+def _cmd_setup(args: argparse.Namespace) -> int:
+    from tuxcomp import doctor as doctor_mod
+    from tuxcomp import posture
+
+    data = doctor_mod.collect_device(
+        installed=_installed_containers(),
+        running=sorted(_running_containers()),
+    )
+    checks = posture.run_checks(data)
+    if args.json:
+        print(posture.checks_json(checks))
+    else:
+        print(posture.format_checks(checks))
+    return 0 if posture.is_complete(checks) else 1
 
 
 def _installed_containers() -> list[str]:
@@ -1471,6 +1494,7 @@ def main(args: list[str] | None = None) -> int:
         "list": _cmd_list,
         "doctor": _cmd_doctor,
         "wake": _cmd_wake,
+        "setup": _cmd_setup,
         "logs": _cmd_logs,
         "exec": _cmd_exec,
         "stop": _cmd_stop,

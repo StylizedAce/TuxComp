@@ -4,6 +4,15 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.20 — 2026-10-05
+
+Status: UNPUSHED — awaiting confirmation
+
+- Add `tuxcomp setup`: pass/fail serving posture check (exit 1 until
+  complete). Verifies the phantom-process setting (when the ROM exposes it),
+  the tuxcomp wake lock, the process budget, and CPU posture. Only checks
+  what the CLI can actually read; everything else is not reported.
+
 ## v0.8.19 — 2026-10-05
 
 Status: UNPUSHED — awaiting confirmation
