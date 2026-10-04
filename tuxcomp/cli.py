@@ -1310,10 +1310,25 @@ def _ssh_out(host: str, port: int, cmd: str, timeout: int = 30) -> str:
     """Run a remote command and return its stdout (empty string on failure)."""
     full = ["ssh", "-q", "-o", "ConnectTimeout=10", "-p", str(port), host, cmd]
     try:
-        proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout, check=False)
         return proc.stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         return ""
+
+
+def _print_deploy_warnings(host: str, port: int) -> None:
+    """Best-effort `tuxcomp doctor` summary from the target before pushing."""
+    from tuxcomp import doctor as doctor_mod
+
+    raw = _ssh_out(host, port, "tuxcomp doctor --json 2>/dev/null", timeout=30)
+    if not raw:
+        return
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return
+    for issue in doctor_mod.warnings(data):
+        print(f"  ! target: {issue}", file=sys.stderr)
 
 
 def _prefetch_wheels(project, deploy) -> int:
@@ -1410,6 +1425,8 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
         print(f"  → tuxcomp installed on target ({host})")
     else:
         print(f"  → tuxcomp on target already up to date ({remote_version})")
+
+    _print_deploy_warnings(host, port)
 
     # 1. build locally (guarantees the pushed dist is fresh)
     if deploy.build:

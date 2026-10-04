@@ -827,6 +827,59 @@ def test_deploy_syncs_env_file(tmp_path, monkeypatch, capsys):
     ), f"no .env sync found in calls: {calls}"
 
 
+def test_deploy_preflight_prints_target_warnings(tmp_path, monkeypatch, capsys):
+    """Deploy asks the target for a doctor summary and surfaces warnings."""
+    import json
+    import subprocess as sp
+
+    from tuxcomp import __version__
+    from tuxcomp.cli import _cmd_deploy, _parse_args
+
+    (tmp_path / "compose.yml").write_text(
+        'services:\n'
+        '  app:\n'
+        '    image: app:latest\n'
+        'x-tuxcomp:\n'
+        '  deploy:\n'
+        '    host: root@192.168.1.153\n'
+        '    port: 8022\n'
+        '    remote_dir: ~/upload-tool\n'
+        '    sync:\n'
+        '      - dist/browser\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "browser").mkdir()
+
+    doctor_payload = {
+        "android": "10",
+        "allowed_count": 4,
+        "total_count": 8,
+        "missing_clusters": [{"cpus_text": "6-7", "max_khz": 2600000, "label": "prime"}],
+        "process_count": 19,
+        "phantom": None,
+        "wake_lock": False,
+        "wake_lock_available": True,
+        "orphans": [],
+    }
+
+    def fake_call(cmd, **kwargs):
+        return 0
+
+    def fake_ssh_out(host, port, cmd, timeout=30):
+        if "doctor" in cmd:
+            return json.dumps(doctor_payload)
+        return f"tuxcomp {__version__}"
+
+    monkeypatch.setattr(sp, "call", fake_call)
+    monkeypatch.setattr("tuxcomp.cli._ssh_out", fake_ssh_out)
+    monkeypatch.chdir(tmp_path)
+    assert _cmd_deploy(_parse_args(["deploy", "-f", "compose.yml"])) == 0
+    err = capsys.readouterr().err
+    assert "! target: Only 4 of 8 CPUs" in err
+    assert "! target: Wake lock is not held" in err
+
+
 def test_remote_add_list_default(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
     from tuxcomp.cli import _cmd_remote, _parse_args

@@ -4,6 +4,14 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.23 — 2026-10-05
+
+Status: UNPUSHED — awaiting confirmation
+
+- `tuxcomp deploy` now asks the target for a `doctor` summary and surfaces
+  resource warnings (allowed CPUs, wake lock, process budget) before pushing.
+- README: document the new `doctor`, `setup`, `wake` and `serve` commands.
+
 ## v0.8.22 — 2026-10-05
 
 Status: UNPUSHED — awaiting confirmation

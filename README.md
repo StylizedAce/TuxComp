@@ -67,6 +67,10 @@ tuxcomp deploy -f docker-compose.yml
 | `tuxcomp rebuild <container>` | Stop + remove + re-up with new code |
 | `tuxcomp deploy -f compose.yml` | Upgrade tuxcomp on target, push files, start stack |
 | `tuxcomp plan -f compose.yml` | Print what would run, without running it |
+| `tuxcomp doctor` | Phone/app resource status and warnings (read-only) |
+| `tuxcomp setup` | Serving posture check (pass/fail, exit 1 until complete) |
+| `tuxcomp wake on\|off\|status` | Manage the Termux wake lock |
+| `tuxcomp serve` | Supervise containers; restart dead ones with backoff |
 
 ## Cloudflared
 
