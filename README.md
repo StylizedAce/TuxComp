@@ -4,6 +4,18 @@ Docker Compose orchestration for Termux servers — parses `docker-compose.yml` 
 equivalent services on phones/Pis that can't run a native Docker engine, via
 [proot-distro](https://github.com/termux/proot-distro).
 
+> **Device dedication notice.** TuxComp turns a phone into a server. While a
+> stack is running, the Termux system is expected to take precedence over
+> normal phone usage: it holds wake locks, consumes CPU/battery and can delay
+> notifications or updates on the host device. Android still applies its own
+> power policy, so performance varies by phone and OEM. Treat a serving phone
+> as a dedicated device — not your daily driver.
+>
+> See [`docs/RESOURCE-MANAGEMENT.md`](docs/RESOURCE-MANAGEMENT.md) for how
+> Android allocates CPU/memory/GPU to the Termux app, the phone-side settings
+> that keep stacks alive (wake locks, phantom-process limits, OEM power
+> managers), and the proposed `tuxcomp doctor` / `wake` / supervisor features.
+
 ## Install
 
 ```bash
