@@ -4,6 +4,20 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.26 — 2026-10-06
+
+Status: UNPUSHED — awaiting confirmation
+
+- Add `docs/GETTING-STARTED.md`: the full zero-to-server walkthrough (F-Droid
+  -> Termux -> `pkg install` -> password SSH -> key planting incl. Windows ->
+  key-only hardening -> first `deploy` -> `setup --adb` + restart -> reboot
+  survival -> day-2 commands -> troubleshooting).
+- README: getting-started callout, `setup --adb` command row, and a note on
+  the Termux SSH username quirk.
+- Fix stale guidance: `tuxcomp setup`'s CPU-posture fix now points at
+  `setup --adb` instead of "keep the screen on"; RESOURCE-MANAGEMENT TL;DR
+  reflects the measured top-app/8-core/9.8 s result.
+
 ## v0.8.25 — 2026-10-05
 
 - Add `tuxcomp setup --adb` (host-side): finds adb automatically (PATH,

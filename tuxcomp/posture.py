@@ -137,7 +137,7 @@ def run_checks(data: dict[str, Any]) -> list[Check]:
                 "CPU posture",
                 STATUS_WARN,
                 detail,
-                fix="keep the screen on with Termux visible for full speed",
+                fix="run `tuxcomp setup --adb --apply --restart-termux`, reopen Termux, then `tuxcomp up --all`",
             )
         )
     return checks

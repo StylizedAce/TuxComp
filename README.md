@@ -22,6 +22,12 @@ equivalent services on phones/Pis that can't run a native Docker engine, via
 pip install git+https://github.com/StylizedAce/TuxComp.git
 ```
 
+> **New to this?** Follow
+> [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md) end to end: it covers
+> installing Termux from F-Droid, enabling SSH with a key, the first
+> `tuxcomp deploy` (which installs TuxComp on the phone), full-speed posture,
+> and surviving reboots.
+
 ## Quick start
 
 Write a compose file with an `x-tuxcomp.deploy` block:
@@ -49,6 +55,9 @@ tuxcomp remote add phone --host root@192.168.1.153 --port 8022 --default
 tuxcomp deploy -f docker-compose.yml
 ```
 
+(The SSH username is whatever `whoami` prints in Termux; Termux's patched
+`sshd` also accepts `root`.)
+
 `tuxcomp deploy` upgrades tuxcomp on the target, pushes your files, and starts the stack.
 
 ## Commands
@@ -69,6 +78,7 @@ tuxcomp deploy -f docker-compose.yml
 | `tuxcomp plan -f compose.yml` | Print what would run, without running it |
 | `tuxcomp doctor` | Phone/app resource status and warnings (read-only) |
 | `tuxcomp setup` | Serving posture check (pass/fail, exit 1 until complete) |
+| `tuxcomp setup --adb` | Host-side: apply the Android background/cached-process tweaks via adb (dry-run unless `--apply`; `--restart-termux` force-stops Termux) |
 | `tuxcomp wake on\|off\|status` | Manage the Termux wake lock |
 | `tuxcomp serve` | Supervise containers; restart dead ones with backoff |
 

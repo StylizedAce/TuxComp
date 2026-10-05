@@ -13,17 +13,19 @@ limits of a phone as a server. No root required for anything here.
   hosting it.
 - Backgrounded Termux gets the little cores only. On the P30 we measured
   `Cpus_allowed_list: 2-3` (deep background) and `0-3` (background) out of 8
-  cores. The big cores require `top-app`, which Android gives the *visible*
-  app — so "Termux open on screen" is the only no-root full-speed mode.
+  cores. The one-time `--adb` tweaks plus a Termux restart were enough to get
+  the app into `top-app` even in the background — the screen-on trick is no
+  longer the only way (see below).
 - The worst slowdown is not the core limit itself: Ollama spawned 8 threads
   for 2-4 allowed cores and they spin-contended (0.14 tok/s vs 7 tok/s with
   the correct thread count). TuxComp injects correct thread counts and warns.
 - Android 12+ additionally kills forked app processes beyond ~32 total
   ("phantom process killer"). `tuxcomp setup` checks the setting when the ROM
-  allows reading it and points at the one Developer-options toggle.
+  allows reading it and points at the one Developer-options toggle; `tuxcomp
+  setup --adb` applies the underlying settings from a PC.
 - Measured result: vision scoring on the P30 went from 471 s to ~37 s fresh
-  (screen off) and ~10-14 s warm. Sub-10 s fresh needs the screen-on
-  `top-app` mode or newer hardware.
+  (screen off) and then to **9.8 s fresh after `setup --adb` + a Termux
+  restart**, all without keeping the screen on.
 
 ---
 
