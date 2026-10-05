@@ -682,6 +682,46 @@ def test_rebuild_removes_and_ups(tmp_path, monkeypatch, capsys):
     assert "up" in call_calls[0] and "-f" in call_calls[0] and str(compose) in call_calls[0]
 
 
+def _patch_remote(
+    monkeypatch,
+    *,
+    version=None,
+    landed=None,
+    missing="",
+    batch_ok=True,
+    pkg_available=True,
+    doctor=None,
+):
+    """Patch the deploy SSH helpers with a simulated target.
+
+    version: what `tuxcomp --version` reports on the first probe.
+    landed: what it reports after an install/upgrade (default: same as version).
+    missing: output of the prerequisite probe (e.g. "missing:git\\n").
+    """
+    from tuxcomp import __version__
+
+    version = version or f"tuxcomp {__version__}"
+    state = {"checks": 0}
+
+    def fake_batch(host, port, cmd, timeout=20):
+        return "tuxcomp-ssh-ok" if batch_ok else ""
+
+    def fake_out(host, port, cmd, timeout=30):
+        if "for c in python3" in cmd:
+            return missing
+        if "command -v pkg" in cmd:
+            return "/data/data/com.termux/files/usr/bin/pkg" if pkg_available else ""
+        if "doctor" in cmd:
+            return doctor or ""
+        if "tuxcomp --version" in cmd:
+            state["checks"] += 1
+            return version if state["checks"] == 1 else (landed or version)
+        return ""
+
+    monkeypatch.setattr("tuxcomp.cli._ssh_batch_out", fake_batch)
+    monkeypatch.setattr("tuxcomp.cli._ssh_out", fake_out)
+
+
 def test_deploy_no_config(tmp_path, monkeypatch, capsys):
     from tuxcomp.cli import _cmd_deploy, _parse_args
 
@@ -697,7 +737,6 @@ def test_deploy_no_config(tmp_path, monkeypatch, capsys):
 def test_deploy_sequence(tmp_path, monkeypatch, capsys):
     import subprocess as sp
 
-    from tuxcomp import __version__
     from tuxcomp.cli import _cmd_deploy, _parse_args
 
     (tmp_path / "compose.yml").write_text(
@@ -722,12 +761,8 @@ def test_deploy_sequence(tmp_path, monkeypatch, capsys):
         calls.append(cmd)
         return 0
 
-    def fake_ssh_out(host, port, cmd, timeout=30):
-        # Simulate an already-up-to-date target so no upgrade SSH call happens.
-        return f"tuxcomp {__version__}"
-
     monkeypatch.setattr(sp, "call", fake_call)
-    monkeypatch.setattr("tuxcomp.cli._ssh_out", fake_ssh_out)
+    _patch_remote(monkeypatch)
     monkeypatch.chdir(tmp_path)
     args = _parse_args(["deploy", "-f", "compose.yml"])
     assert _cmd_deploy(args) == 0
@@ -767,12 +802,8 @@ def test_deploy_upgrades_outdated_tuxcomp(tmp_path, monkeypatch, capsys):
         calls.append(cmd)
         return 0
 
-    def fake_ssh_out(host, port, cmd, timeout=30):
-        # Simulate an outdated target: version is old, so upgrade runs.
-        return "tuxcomp 0.1.0"
-
     monkeypatch.setattr(sp, "call", fake_call)
-    monkeypatch.setattr("tuxcomp.cli._ssh_out", fake_ssh_out)
+    _patch_remote(monkeypatch, version="tuxcomp 0.1.0")
     monkeypatch.chdir(tmp_path)
     args = _parse_args(["deploy", "-f", "compose.yml"])
     assert _cmd_deploy(args) == 0
@@ -785,7 +816,6 @@ def test_deploy_syncs_env_file(tmp_path, monkeypatch, capsys):
     """`.env` listed in sync: is pushed to <remote_dir>/.env."""
     import subprocess as sp
 
-    from tuxcomp import __version__
     from tuxcomp.cli import _cmd_deploy, _parse_args
 
     (tmp_path / "compose.yml").write_text(
@@ -812,11 +842,8 @@ def test_deploy_syncs_env_file(tmp_path, monkeypatch, capsys):
         calls.append(cmd)
         return 0
 
-    def fake_ssh_out(host, port, cmd, timeout=30):
-        return f"tuxcomp {__version__}"
-
     monkeypatch.setattr(sp, "call", fake_call)
-    monkeypatch.setattr("tuxcomp.cli._ssh_out", fake_ssh_out)
+    _patch_remote(monkeypatch)
     monkeypatch.chdir(tmp_path)
     args = _parse_args(["deploy", "-f", "compose.yml"])
     assert _cmd_deploy(args) == 0
@@ -832,7 +859,6 @@ def test_deploy_preflight_prints_target_warnings(tmp_path, monkeypatch, capsys):
     import json
     import subprocess as sp
 
-    from tuxcomp import __version__
     from tuxcomp.cli import _cmd_deploy, _parse_args
 
     (tmp_path / "compose.yml").write_text(
@@ -866,18 +892,116 @@ def test_deploy_preflight_prints_target_warnings(tmp_path, monkeypatch, capsys):
     def fake_call(cmd, **kwargs):
         return 0
 
-    def fake_ssh_out(host, port, cmd, timeout=30):
-        if "doctor" in cmd:
-            return json.dumps(doctor_payload)
-        return f"tuxcomp {__version__}"
-
     monkeypatch.setattr(sp, "call", fake_call)
-    monkeypatch.setattr("tuxcomp.cli._ssh_out", fake_ssh_out)
+    _patch_remote(monkeypatch, doctor=json.dumps(doctor_payload))
     monkeypatch.chdir(tmp_path)
     assert _cmd_deploy(_parse_args(["deploy", "-f", "compose.yml"])) == 0
     err = capsys.readouterr().err
     assert "! target: Only 4 of 8 CPUs" in err
     assert "! target: Wake lock is not held" in err
+
+
+def _deploy_compose(tmp_path):
+    (tmp_path / "compose.yml").write_text(
+        'services:\n'
+        '  app:\n'
+        '    image: app:latest\n'
+        'x-tuxcomp:\n'
+        '  deploy:\n'
+        '    host: root@192.168.1.153\n'
+        '    port: 8022\n'
+        '    remote_dir: ~/upload-tool\n'
+        '    sync:\n'
+        '      - dist/browser\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "dist").mkdir(exist_ok=True)
+    (tmp_path / "dist" / "browser").mkdir(exist_ok=True)
+
+
+def test_deploy_fails_when_ssh_key_auth_unavailable(tmp_path, monkeypatch, capsys):
+    import subprocess as sp
+
+    from tuxcomp.cli import _cmd_deploy, _parse_args
+
+    _deploy_compose(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_call(cmd, **kwargs):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(sp, "call", fake_call)
+    _patch_remote(monkeypatch, batch_ok=False)
+    monkeypatch.chdir(tmp_path)
+    assert _cmd_deploy(_parse_args(["deploy", "-f", "compose.yml"])) == 1
+    err = capsys.readouterr().err
+    assert "cannot reach" in err and "remote bootstrap" in err
+    assert calls == []  # nothing pushed
+
+
+def test_deploy_installs_missing_termux_packages(tmp_path, monkeypatch, capsys):
+    import subprocess as sp
+
+    from tuxcomp.cli import _cmd_deploy, _parse_args
+
+    _deploy_compose(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_call(cmd, **kwargs):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(sp, "call", fake_call)
+    _patch_remote(monkeypatch, missing="missing:proot-distro\nmissing:git\n")
+    monkeypatch.chdir(tmp_path)
+    assert _cmd_deploy(_parse_args(["deploy", "-f", "compose.yml"])) == 0
+    assert calls[0][0] == "ssh" and "pkg install -y proot-distro git" in calls[0][-1]
+    assert calls[1][0] == "ssh" and "mkdir -p" in calls[1][-1]
+    out = capsys.readouterr().out
+    assert "target is missing Termux packages" in out
+
+
+def test_deploy_missing_packages_without_pkg_manager(tmp_path, monkeypatch, capsys):
+    import subprocess as sp
+
+    from tuxcomp.cli import _cmd_deploy, _parse_args
+
+    _deploy_compose(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_call(cmd, **kwargs):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(sp, "call", fake_call)
+    _patch_remote(monkeypatch, missing="missing:git\n", pkg_available=False)
+    monkeypatch.chdir(tmp_path)
+    assert _cmd_deploy(_parse_args(["deploy", "-f", "compose.yml"])) == 1
+    err = capsys.readouterr().err
+    assert "pkg install -y git" in err
+    assert calls == []
+
+
+def test_deploy_warns_when_dev_version_not_installable(tmp_path, monkeypatch, capsys):
+    """A dev build newer than GitHub cannot be pip-installed from git."""
+    import subprocess as sp
+
+    from tuxcomp.cli import _cmd_deploy, _parse_args
+
+    _deploy_compose(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_call(cmd, **kwargs):
+        calls.append(cmd)
+        return 0
+
+    monkeypatch.setattr(sp, "call", fake_call)
+    _patch_remote(monkeypatch, version="tuxcomp 0.1.0", landed="tuxcomp 0.1.0")
+    monkeypatch.chdir(tmp_path)
+    assert _cmd_deploy(_parse_args(["deploy", "-f", "compose.yml"])) == 0
+    err = capsys.readouterr().err
+    assert "Development builds newer than GitHub" in err
 
 
 def test_remote_add_list_default(tmp_path, monkeypatch, capsys):
@@ -989,6 +1113,7 @@ def test_deploy_uses_default_remote(tmp_path, monkeypatch, capsys):
         return 0
 
     monkeypatch.setattr(sp, "call", fake_call)
+    _patch_remote(monkeypatch)
     monkeypatch.chdir(tmp_path)
     args = _parse_args(["deploy", "-f", "compose.yml"])
     assert _cmd_deploy(args) == 0
@@ -1024,6 +1149,7 @@ def test_deploy_remote_flag_overrides(tmp_path, monkeypatch, capsys):
         return 0
 
     monkeypatch.setattr(sp, "call", fake_call)
+    _patch_remote(monkeypatch)
     monkeypatch.chdir(tmp_path)
     args = _parse_args(["deploy", "-f", "compose.yml", "--remote", "b"])
     assert _cmd_deploy(args) == 0

@@ -4,6 +4,18 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.27 — 2026-10-06
+
+Status: UNPUSHED — awaiting confirmation
+
+- `tuxcomp deploy` now preflights the target: it verifies non-interactive
+  (key) SSH first with an actionable error pointing at
+  `tuxcomp remote bootstrap` / GETTING-STARTED, then checks for the Termux
+  prerequisites (`python`, `git`, `proot-distro`) and installs missing ones
+  via `pkg install -y ...` automatically (when `pkg` exists).
+- Deploy re-probes the target version after installing tuxcomp and warns when
+  a development build could not be installed from GitHub (wheel flow instead).
+
 ## v0.8.26 — 2026-10-06
 
 Status: UNPUSHED — awaiting confirmation

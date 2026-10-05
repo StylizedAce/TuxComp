@@ -1339,6 +1339,85 @@ def _ssh_out(host: str, port: int, cmd: str, timeout: int = 30) -> str:
         return ""
 
 
+def _ssh_batch_out(host: str, port: int, cmd: str, timeout: int = 20) -> str:
+    """Like _ssh_out but BatchMode: fails fast instead of prompting for a password."""
+    full = [
+        "ssh", "-q",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=10",
+        "-p", str(port), host, cmd,
+    ]
+    try:
+        proc = subprocess.run(full, capture_output=True, text=True, timeout=timeout, check=False)
+        return proc.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
+
+#: remote command -> Termux package that provides it
+TERMUX_PREREQS = {
+    "python3": "python",
+    "pip3": "python",
+    "git": "git",
+    "proot-distro": "proot-distro",
+}
+
+
+def _remote_missing_packages(host: str, port: int) -> list[str]:
+    """Termux packages missing on the target, from a single ssh probe."""
+    probe = (
+        "for c in python3 pip3 git proot-distro; do "
+        "command -v $c >/dev/null 2>&1 || echo missing:$c; done"
+    )
+    raw = _ssh_out(host, port, probe, timeout=20)
+    missing: list[str] = []
+    for line in raw.splitlines():
+        _, _, command = line.strip().partition(":")
+        pkg = TERMUX_PREREQS.get(command)
+        if pkg and pkg not in missing:
+            missing.append(pkg)
+    return missing
+
+
+def _deploy_check_connection(host: str, port: int) -> bool:
+    if _ssh_batch_out(host, port, "echo tuxcomp-ssh-ok") == "tuxcomp-ssh-ok":
+        return True
+    print(
+        f"error: cannot reach {host}:{port} over SSH with key auth.\n"
+        "  - is the phone on the same network and is `sshd` running in Termux?\n"
+        "  - set up your key:  tuxcomp remote bootstrap <name>\n"
+        "  - or follow docs/GETTING-STARTED.md (sections 2-3)\n"
+        f"  - manual check: ssh -p {port} {host}",
+        file=sys.stderr,
+    )
+    return False
+
+
+def _deploy_ensure_prereqs(host: str, port: int) -> bool:
+    missing = _remote_missing_packages(host, port)
+    if not missing:
+        return True
+    pkgs = " ".join(missing)
+    print(f"  → target is missing Termux packages: {pkgs}")
+    if not _ssh_out(host, port, "command -v pkg", timeout=15):
+        print(
+            f"error: could not install {pkgs} on the target (no `pkg` found).\n"
+            f"  install them in Termux and re-deploy:\n"
+            f"      pkg install -y {pkgs}",
+            file=sys.stderr,
+        )
+        return False
+    if _ssh(host, port, f"pkg install -y {pkgs}") != 0:
+        print(
+            f"error: `pkg install -y {pkgs}` failed on the target - run it manually in Termux",
+            file=sys.stderr,
+        )
+        return False
+    print(f"  → installed Termux packages: {pkgs}")
+    return True
+
+
+
 def _print_deploy_warnings(host: str, port: int) -> None:
     """Best-effort `tuxcomp doctor` summary from the target before pushing."""
     from tuxcomp import doctor as doctor_mod
@@ -1431,23 +1510,38 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
 
     print(f"deploy {project.name} -> {host}:{port}")
 
-    # 0. self-upgrade tuxcomp on the target so the phone always runs the
-    #    latest tooling before any service is pushed.
+    # 0. reachability + Termux prerequisites before touching anything.
+    if not _deploy_check_connection(host, port):
+        return 1
+    if not _deploy_ensure_prereqs(host, port):
+        return 1
+
+    # 0b. self-upgrade tuxcomp on the target so the phone always runs the
+    #     latest tooling before any service is pushed.
     remote_version = _ssh_out(host, port, "tuxcomp --version 2>/dev/null || echo none")
-    if remote_version and remote_version != f"tuxcomp {__version__}":
-        print(f"  → older tuxcomp on target ({remote_version}); upgrading to tuxcomp {__version__}")
-        if _ssh(host, port, "pip install --upgrade git+https://github.com/StylizedAce/TuxComp.git") != 0:
-            print("error: could not upgrade tuxcomp on target", file=sys.stderr)
-            return 1
-        print(f"  → tuxcomp upgraded on target ({host})")
-    elif not remote_version:
+    if remote_version.startswith("tuxcomp "):
+        if remote_version != f"tuxcomp {__version__}":
+            print(f"  → older tuxcomp on target ({remote_version}); upgrading to tuxcomp {__version__}")
+            if _ssh(host, port, "pip install --upgrade git+https://github.com/StylizedAce/TuxComp.git") != 0:
+                print("error: could not upgrade tuxcomp on target", file=sys.stderr)
+                return 1
+            print(f"  → tuxcomp upgraded on target ({host})")
+        else:
+            print(f"  → tuxcomp on target already up to date ({remote_version})")
+    else:
         print(f"  → tuxcomp not found on target; installing tuxcomp {__version__}")
         if _ssh(host, port, "pip install git+https://github.com/StylizedAce/TuxComp.git") != 0:
             print("error: could not install tuxcomp on target", file=sys.stderr)
             return 1
         print(f"  → tuxcomp installed on target ({host})")
-    else:
-        print(f"  → tuxcomp on target already up to date ({remote_version})")
+
+    landed = _ssh_out(host, port, "tuxcomp --version 2>/dev/null || echo none")
+    if landed != f"tuxcomp {__version__}":
+        print(
+            f"  ! target now runs {landed or 'nothing'}; this PC is on tuxcomp {__version__}.\n"
+            "    Development builds newer than GitHub need the wheel install (docs/VERSIONING.md).",
+            file=sys.stderr,
+        )
 
     _print_deploy_warnings(host, port)
 
