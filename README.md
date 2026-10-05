@@ -75,6 +75,8 @@ tuxcomp deploy -f docker-compose.yml
 | `tuxcomp exec <container> <cmd>` | Run a command inside a container |
 | `tuxcomp rebuild <container>` | Stop + remove + re-up with new code |
 | `tuxcomp deploy -f compose.yml` | Upgrade tuxcomp on target, push files, start stack |
+| `tuxcomp remote test <name>` | Check key SSH, remote tuxcomp version and device |
+| `tuxcomp remote bootstrap <name>` | Create/plant an SSH key over the first password login (Windows-friendly) |
 | `tuxcomp plan -f compose.yml` | Print what would run, without running it |
 | `tuxcomp doctor` | Phone/app resource status and warnings (read-only) |
 | `tuxcomp setup` | Serving posture check (pass/fail, exit 1 until complete) |

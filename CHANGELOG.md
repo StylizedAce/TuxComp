@@ -4,6 +4,18 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.28 — 2026-10-06
+
+Status: UNPUSHED — awaiting confirmation
+
+- Add `tuxcomp remote bootstrap [name]`: creates an ed25519 key when missing,
+  plants it over the first password login (classic ssh-copy-id stdin trick, no
+  sshpass, works on Windows), verifies key-only login and prints the optional
+  `PasswordAuthentication no` hardening steps.
+- Add `tuxcomp remote test [name]`: non-interactive (key) SSH check plus the
+  remote tuxcomp version and device model.
+- README: document both commands.
+
 ## v0.8.27 — 2026-10-06
 
 Status: UNPUSHED — awaiting confirmation

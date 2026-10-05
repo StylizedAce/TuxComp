@@ -115,8 +115,66 @@ def _save_remotes(data: dict) -> None:
     Path(_remotes_path()).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
+def _remote_test(host: str, port: int, name: str) -> int:
+    print(f"remote test {name} ({host}:{port})")
+    raw = _ssh_batch_out(
+        host,
+        port,
+        "echo tuxcomp-ssh-ok; tuxcomp --version 2>/dev/null || echo none; "
+        "getprop ro.product.model 2>/dev/null",
+    )
+    if not raw.startswith("tuxcomp-ssh-ok"):
+        print(
+            f"  [FAIL] no non-interactive (key) SSH - set up keys with:\n"
+            f"      tuxcomp remote bootstrap {name}",
+            file=sys.stderr,
+        )
+        return 1
+    lines = raw.splitlines()
+    version = lines[1] if len(lines) > 1 else "none"
+    model = lines[2] if len(lines) > 2 else "unknown"
+    print("  [ok]   ssh key auth")
+    print(f"  [ok]   tuxcomp: {version}")
+    print(f"  [ok]   device: {model}")
+    return 0
+
+
+def _remote_bootstrap(host: str, port: int, name: str, key_arg: str | None) -> int:
+    from tuxcomp import onboarding
+
+    print(f"remote bootstrap {name} ({host}:{port})")
+    private = os.path.expanduser(key_arg) if key_arg else onboarding.default_key_path()
+    if onboarding.ensure_keypair(private) != 0:
+        return 1
+    if onboarding.plant_key(host, port, private) != 0:
+        return 1
+    if not onboarding.verify_key(host, port, private):
+        print(
+            "error: key login still failing after planting - check `sshd` and the password",
+            file=sys.stderr,
+        )
+        return 1
+    print("  [ok] key login verified")
+    print(onboarding.hardening_notes(host, port))
+    return 0
+
+
 def _cmd_remote(args: argparse.Namespace) -> int:
     data = _load_remotes()
+    if args.action in ("bootstrap", "test"):
+        name = args.name or data.get("default")
+        if not name or name not in data["remotes"]:
+            print(
+                "error: unknown remote - add one first:\n"
+                "    tuxcomp remote add phone --host root@192.168.1.153 --port 8022 --default",
+                file=sys.stderr,
+            )
+            return 1
+        cfg = data["remotes"][name]
+        host, port = str(cfg["host"]), int(cfg.get("port", 22))
+        if args.action == "test":
+            return _remote_test(host, port, name)
+        return _remote_bootstrap(host, port, name, args.key)
     if args.action == "add":
         if not args.name or not args.host:
             print("error: tuxcomp remote add <name> --host <host> [--port N] [--default]", file=sys.stderr)
@@ -308,11 +366,15 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
         parents=[parent],
         help="manage deploy targets (ssh host/port, set once, inferred later)",
     )
-    remote.add_argument("action", choices=["add", "list", "remove", "set-default"])
-    remote.add_argument("name", nargs="?", help="remote name (required for add/remove/set-default)")
+    remote.add_argument(
+        "action",
+        choices=["add", "list", "remove", "set-default", "test", "bootstrap"],
+    )
+    remote.add_argument("name", nargs="?", help="remote name (required for add/remove/set-default; defaults for test/bootstrap)")
     remote.add_argument("--host", default=None, help="ssh target, e.g. root@192.168.1.153")
     remote.add_argument("--port", type=int, default=22, help="ssh port (default 22)")
     remote.add_argument("--default", action="store_true", help="make this the default remote")
+    remote.add_argument("--key", default=None, help="private key path for bootstrap (default ~/.ssh/id_ed25519)")
 
     tunnel_token = sub.add_parser(
         "tunnel-token",
