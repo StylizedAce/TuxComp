@@ -86,8 +86,9 @@ def test_setup_adb_apply_runs_all_commands(fake_adb, capsys):
     assert ["shell", "device_config", "put", "activity_manager", "max_cached_processes", "256"] in shells
     assert ["shell", "device_config", "put", "activity_manager", "max_empty_time_millis", "43200000"] in shells
     assert ["shell", "device_config", "set_sync_disabled_for_tests", "persistent"] in shells
+    assert ["shell", "dumpsys", "deviceidle", "whitelist", "+com.termux"] in shells
     out = capsys.readouterr().out
-    assert "applied 5/5" in out
+    assert "applied 6/6" in out
     assert "Reopen Termux" not in out
 
 
@@ -118,7 +119,7 @@ def test_setup_adb_skips_version_specific_keys(monkeypatch, capsys):
     assert adb_mod.setup_adb(apply_changes=True) == 0
     out = capsys.readouterr().out
     assert "[skip] stop Play Services from reverting these values (Android 12+)" in out
-    assert "applied 4/4" in out
+    assert "applied 5/5" in out
     assert "1 skipped" in out
     shells = _shell_calls(calls)
     assert ["shell", "device_config", "set_sync_disabled_for_tests", "persistent"] not in shells
@@ -140,7 +141,8 @@ def test_setup_adb_partial_failures_still_succeed(monkeypatch, capsys):
 
     monkeypatch.setattr(adb_mod.subprocess, "run", fake_run)
     assert adb_mod.setup_adb(apply_changes=True) == 0
-    assert "applied 1/5" in capsys.readouterr().out
+    # settings put + dumpsys whitelist still succeed; the 4 device_config keys fail
+    assert "applied 2/6" in capsys.readouterr().out
 
 
 def test_setup_adb_all_failures_fail(monkeypatch, capsys):

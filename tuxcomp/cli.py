@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -331,6 +332,13 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="hold the Termux wake lock while supervising",
     )
+    serve.add_argument(
+        "--detach",
+        action="store_true",
+        help="run the supervisor in the background (~/.tuxcomp/serve.pid + serve.log)",
+    )
+    serve.add_argument("--status", action="store_true", help="report the detached supervisor")
+    serve.add_argument("--stop", action="store_true", help="stop the detached supervisor")
 
     logs = sub.add_parser("logs", parents=[parent], help="show service/container logs")
     logs.add_argument("service", nargs="?", help="container or service name (default: all services with -f)")
@@ -1177,7 +1185,84 @@ def _stamp() -> str:
     return time.strftime("%H:%M:%S")
 
 
+def _serve_pid_path() -> str:
+    return os.path.join(_tux_root(), "serve.pid")
+
+
+def _serve_log_path() -> str:
+    return os.path.join(_tux_root(), "serve.log")
+
+
+def _serve_running_pid() -> int | None:
+    path = _serve_pid_path()
+    if not os.path.exists(path):
+        return None
+    try:
+        pid = int(Path(path).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return None
+    return pid
+
+
+def _serve_detach(args: argparse.Namespace) -> int:
+    pid = _serve_running_pid()
+    if pid:
+        print(f"serve: already running (pid {pid})")
+        return 0
+    os.makedirs(_tux_root(), exist_ok=True)
+    cmd = [sys.executable, "-m", "tuxcomp", "serve", "--interval", str(args.interval)]
+    if args.wake_lock:
+        cmd.append("--wake-lock")
+    log = open(_serve_log_path(), "a", encoding="utf-8")
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        print(f"error: could not start the supervisor: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        log.close()
+    Path(_serve_pid_path()).write_text(str(proc.pid), encoding="utf-8")
+    print(f"serve: started in the background (pid {proc.pid})")
+    print(f"  log: {_serve_log_path()}")
+    return 0
+
+
 def _cmd_serve(args: argparse.Namespace) -> int:
+    if args.status:
+        pid = _serve_running_pid()
+        if pid:
+            print(f"serve: running (pid {pid})")
+            print(f"  log: {_serve_log_path()}")
+        else:
+            print("serve: not running (no detached supervisor)")
+        return 0
+    if args.stop:
+        pid = _serve_running_pid()
+        if not pid:
+            print("serve: not running (no detached supervisor)")
+            return 0
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as exc:
+            print(f"error: could not stop serve pid {pid}: {exc}", file=sys.stderr)
+            return 1
+        try:
+            os.remove(_serve_pid_path())
+        except OSError:
+            pass
+        print(f"serve: stopped (pid {pid})")
+        return 0
+    if args.detach:
+        return _serve_detach(args)
     if args.wake_lock and _acquire_wake_lock() != 0:
         print("warning: continuing without the wake lock", file=sys.stderr)
     failures: dict[str, int] = {}
@@ -1689,20 +1774,10 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     #    expand ~ on the remote side); default to ~/<project>
     remote_root = deploy.remote_dir or f"~/{project.name}"
     if remote_root in ("~", "~/") or remote_root.startswith("~/"):
-        try:
-            home_probe = subprocess.run(
-                ["ssh", "-q", "-p", str(port), host, "echo $HOME"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            home = home_probe.stdout.strip()
-            if not home:
-                home = "/data/data/com.termux/files/home"
-            remote_root = home + remote_root[1:]
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            print(f"error: could not resolve remote home: {exc}", file=sys.stderr)
-            return 1
+        home = _ssh_out(host, port, "echo $HOME", timeout=30)
+        if not home:
+            home = "/data/data/com.termux/files/home"
+        remote_root = home + remote_root[1:]
     remote_root = remote_root.rstrip("/")
 
     # 3. make sure remote dir exists

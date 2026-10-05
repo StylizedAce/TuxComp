@@ -120,7 +120,7 @@ and restart Termux if the app demotes again.
 | `tuxcomp boot install\|status\|remove` | Writes the Termux:Boot script (wake lock + `sshd` + `up --all` + background `serve`) so a reboot brings everything back |
 | `x-tuxcomp.keep_awake: true` | Acquire the wake lock on `up` and re-acquire it on `up --all`/`start` after a Termux restart; released when the last registered service stops |
 | `x-tuxcomp.resources.threads: auto\|N` | Injects `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `UV_THREADPOOL_SIZE` from the allowed CPU count |
-| `tuxcomp serve` | Supervises registered containers: restarts dead sessions with backoff, re-runs health checks |
+| `tuxcomp serve` | Supervises registered containers: restarts dead sessions with backoff, re-runs health checks (`--detach` for a background supervisor) |
 
 **Full-speed mode (no root):** get the app into the `top-app` cpuset, which on
 the P30 needed the `--adb` settings above plus a Termux restart. `tuxcomp

@@ -65,6 +65,11 @@ COMMANDS: list[tuple[str, list[str], int]] = [
         ["shell", "device_config", "put", "activity_manager", "max_empty_time_millis", "43200000"],
         0,
     ),
+    (
+        "exempt Termux from battery optimization",
+        ["shell", "dumpsys", "deviceidle", "whitelist", "+com.termux"],
+        0,
+    ),
 ]
 
 #: Force-stop the Termux app so the settings fully apply (kills containers).

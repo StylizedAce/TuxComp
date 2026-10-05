@@ -4,6 +4,17 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.30 — 2026-10-06
+
+Status: UNPUSHED — awaiting confirmation
+
+- `tuxcomp setup --adb` now also exempts Termux from battery optimization
+  (`dumpsys deviceidle whitelist +com.termux`).
+- `tuxcomp serve --detach|--status|--stop`: run the supervisor in the
+  background (pidfile + log in `~/.tuxcomp/`) so it survives a closed SSH
+  session. `tuxcomp boot install` uses it.
+- README/RESOURCE-MANAGEMENT: document both.
+
 ## v0.8.29 — 2026-10-06
 
 Status: UNPUSHED — awaiting confirmation
