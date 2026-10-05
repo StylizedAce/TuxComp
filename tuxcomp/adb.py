@@ -242,6 +242,7 @@ def setup_adb(apply_changes: bool = False, restart_termux: bool = False) -> int:
         if proc.returncode == 0:
             print("  [ok] Termux force-stopped")
             print("Reopen Termux on the phone, then run: tuxcomp up --all")
+            print("(up --all re-arms the wake lock for stacks that set keep_awake: true)")
         else:
             print("  [FAIL] could not force-stop Termux", file=sys.stderr)
     else:

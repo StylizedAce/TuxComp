@@ -4,6 +4,18 @@ All notable changes to TuxComp are recorded here. Entries marked
 `UNPUSHED — awaiting confirmation` exist only on a local branch until the
 change is reviewed and approved for `main`.
 
+## v0.8.29 — 2026-10-06
+
+Status: UNPUSHED — awaiting confirmation
+
+- Registry entries remember `x-tuxcomp.keep_awake`, and `tuxcomp start` /
+  `up --all` re-arm the wake lock after a Termux restart or reboot (the
+  `setup --adb --restart-termux` flow now closes cleanly).
+- Add `tuxcomp boot install|status|remove`: writes the Termux:Boot script
+  (`termux-wake-lock`, `sshd`, `up --all`, background `serve --wake-lock`),
+  so the phone comes back as a server after a reboot.
+- `setup --adb --restart-termux` output notes the wake-lock recovery.
+
 ## v0.8.28 — 2026-10-06
 
 Status: UNPUSHED — awaiting confirmation

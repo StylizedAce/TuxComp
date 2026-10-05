@@ -112,3 +112,27 @@ def test_project_keep_awake_defaults_false(tmp_path):
     project = parse_compose_file(compose)
     assert project.tuxcomp is not None
     assert project.tuxcomp.keep_awake is False
+
+
+def test_start_restores_wake_lock_from_registry(wake_env, monkeypatch, capsys):
+    """up --all / start re-arm the wake lock when the stack had keep_awake."""
+    home, calls = wake_env
+    from tuxcomp.cli import _save_registry
+
+    monkeypatch.setattr(cli, "_start_from_entry", lambda entry, timeout: 0)
+    _save_registry({"container": "app", "start": [], "keep_awake": True})
+    assert main(["start", "app"]) == 0
+    assert ["termux-wake-lock"] in calls
+    assert (home / ".tuxcomp" / "wake.state").exists()
+    assert "wake lock acquired" in capsys.readouterr().out
+
+
+def test_start_without_keep_awake_does_not_lock(wake_env, monkeypatch, capsys):
+    home, calls = wake_env
+    from tuxcomp.cli import _save_registry
+
+    monkeypatch.setattr(cli, "_start_from_entry", lambda entry, timeout: 0)
+    _save_registry({"container": "app", "start": []})
+    assert main(["start", "app"]) == 0
+    assert calls == []
+    assert not (home / ".tuxcomp" / "wake.state").exists()

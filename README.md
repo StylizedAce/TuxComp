@@ -82,6 +82,7 @@ tuxcomp deploy -f docker-compose.yml
 | `tuxcomp setup` | Serving posture check (pass/fail, exit 1 until complete) |
 | `tuxcomp setup --adb` | Host-side: apply the Android background/cached-process tweaks via adb (dry-run unless `--apply`; `--restart-termux` force-stops Termux) |
 | `tuxcomp wake on\|off\|status` | Manage the Termux wake lock |
+| `tuxcomp boot install\|status\|remove` | Termux:Boot startup script (wake lock + sshd + up --all + serve) |
 | `tuxcomp serve` | Supervise containers; restart dead ones with backoff |
 
 ## Cloudflared

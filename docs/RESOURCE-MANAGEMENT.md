@@ -117,7 +117,8 @@ and restart Termux if the app demotes again.
 | `tuxcomp setup` | Pass/fail posture gate (exit 1 = not serving-ready). Only checks what it can verify: phantom setting (when readable), TuxComp wake lock, process budget |
 | `tuxcomp setup --adb` | Host-side: detect adb and plan/execute the Android background tweaks (dry-run unless `--apply`; optional `--restart-termux`) |
 | `tuxcomp wake on\|off\|status` | Manages the Termux wake lock with a marker so `down` releases only locks TuxComp acquired |
-| `x-tuxcomp.keep_awake: true` | Acquire the wake lock on `up`, release when the last registered service stops |
+| `tuxcomp boot install\|status\|remove` | Writes the Termux:Boot script (wake lock + `sshd` + `up --all` + background `serve`) so a reboot brings everything back |
+| `x-tuxcomp.keep_awake: true` | Acquire the wake lock on `up` and re-acquire it on `up --all`/`start` after a Termux restart; released when the last registered service stops |
 | `x-tuxcomp.resources.threads: auto\|N` | Injects `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, `UV_THREADPOOL_SIZE` from the allowed CPU count |
 | `tuxcomp serve` | Supervises registered containers: restarts dead sessions with backoff, re-runs health checks |
 
