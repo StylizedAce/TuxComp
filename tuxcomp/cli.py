@@ -308,7 +308,7 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
     boot = sub.add_parser(
         "boot",
         parents=[parent],
-        help="install/remove the Termux:Boot startup script (wake lock + sshd + up --all + serve)",
+        help="install/remove the Termux:Boot startup script (wake lock + sshd + up --boot + serve)",
     )
     boot.add_argument("action", choices=["install", "status", "remove"])
 

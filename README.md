@@ -88,11 +88,13 @@ tuxcomp deploy -f docker-compose.yml
 
 ## Start on boot
 
-Opt in per project, so a reboot brings up only what you need:
+**Any service that must survive a reboot needs `boot: true`.** That means
+customer-facing apps, APIs, and anything a tunnel exposes. Labs, one-off tools
+and heavy model stacks should leave it off (the default).
 
 ```yaml
 x-tuxcomp:
-  boot: true          # start after reboot (default: false)
+  boot: true          # required for critical services: start after reboot
   keep_awake: true
 ```
 
@@ -107,6 +109,10 @@ The generated script holds a wake lock, starts `sshd`, runs `tuxcomp up --boot`
 
 Requires **Termux:Boot** from F-Droid, opened once after installing. Projects
 without the flag — labs, one-off tools, heavy model stacks — stay down.
+
+If a tunneled service must survive a reboot, set `boot: true` at the project
+level as well, otherwise the tunnel comes back but the service it points at
+does not.
 
 ## Cloudflared
 
