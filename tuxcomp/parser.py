@@ -256,7 +256,12 @@ def _parse_tuxcomp_project(raw: dict) -> ProjectTuxComp | None:
             pip_wheels=bool(deploy.get("pip_wheels", False)),
             requirements=str(deploy["requirements"]) if deploy.get("requirements") else None,
         )
-    return ProjectTuxComp(cloudflared=cf, deploy=dp, keep_awake=bool(ext.get("keep_awake", False)))
+    return ProjectTuxComp(
+        cloudflared=cf,
+        deploy=dp,
+        keep_awake=bool(ext.get("keep_awake", False)),
+        boot=bool(ext.get("boot", False)),
+    )
 
 
 def _parse_service(name: str, raw: dict, declared_volumes: dict[str, dict], source_dir: str) -> Service:

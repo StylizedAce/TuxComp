@@ -86,6 +86,9 @@ class ProjectTuxComp:
     cloudflared: Optional[CloudflaredConfig] = None
     deploy: Optional[DeployConfig] = None
     keep_awake: bool = False
+    # Opt-in start-on-boot. Projects without this stay down after a reboot;
+    # `tuxcomp up --boot` (run by the Termux:Boot script) only starts these.
+    boot: bool = False
 
 
 @dataclass

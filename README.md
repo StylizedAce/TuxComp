@@ -66,6 +66,7 @@ tuxcomp deploy -f docker-compose.yml
 |---|---|
 | `tuxcomp up -f compose.yml` | Provision + start services |
 | `tuxcomp up a b c` / `tuxcomp up --all` | Start registered containers from saved config |
+| `tuxcomp up --boot` | Start only projects that opted into `x-tuxcomp.boot: true` (what the boot script runs) |
 | `tuxcomp down -f compose.yml` | Stop services (keeps state) |
 | `tuxcomp down a b c` / `tuxcomp down --all` | Stop registered containers (--all includes tunnels) |
 | `tuxcomp start <container>` | Restart a container from its saved config |
@@ -82,8 +83,30 @@ tuxcomp deploy -f docker-compose.yml
 | `tuxcomp setup` | Serving posture check (pass/fail, exit 1 until complete) |
 | `tuxcomp setup --adb` | Host-side: apply the Android background/cached-process tweaks via adb (dry-run unless `--apply`; `--restart-termux` force-stops Termux) |
 | `tuxcomp wake on\|off\|status` | Manage the Termux wake lock |
-| `tuxcomp boot install\|status\|remove` | Termux:Boot startup script (wake lock + sshd + up --all + serve) |
+| `tuxcomp boot install\|status\|remove` | Termux:Boot startup script (wake lock + sshd + `up --boot` + serve) |
 | `tuxcomp serve` | Supervise containers; restart dead ones with backoff (`--detach`, `--status`, `--stop`) |
+
+## Start on boot
+
+Opt in per project, so a reboot brings up only what you need:
+
+```yaml
+x-tuxcomp:
+  boot: true          # start after reboot (default: false)
+  keep_awake: true
+```
+
+```bash
+tuxcomp boot install   # writes ~/.termux/boot/00-tuxcomp
+tuxcomp boot status
+```
+
+The generated script holds a wake lock, starts `sshd`, runs `tuxcomp up --boot`
+(only `boot: true` projects, skipping anything already running) and then
+`tuxcomp serve --wake-lock` to restart containers that die later.
+
+Requires **Termux:Boot** from F-Droid, opened once after installing. Projects
+without the flag — labs, one-off tools, heavy model stacks — stay down.
 
 ## Cloudflared
 

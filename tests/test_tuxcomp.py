@@ -1642,3 +1642,47 @@ def test_tunnel_token_set_requires_value(tmp_path, monkeypatch, capsys):
     assert _cmd_tunnel_token(_parse_args(["tunnel-token", "set", "my-tunnel"])) == 1
     assert "--token is required" in capsys.readouterr().err
     assert not (tmp_path / ".tuxcomp" / "tokens" / "my-tunnel").exists()
+
+
+def test_parse_boot_flag(tmp_path):
+    """x-tuxcomp.boot opts a project into start-on-boot."""
+    from tuxcomp.parser import parse_compose_file
+
+    f = tmp_path / "boot.yml"
+    f.write_text(
+        "services:\n"
+        "  app:\n"
+        "    image: app:latest\n"
+        "x-tuxcomp:\n"
+        "  boot: true\n",
+        encoding="utf-8",
+    )
+    project = parse_compose_file(f)
+    assert project.tuxcomp is not None
+    assert project.tuxcomp.boot is True
+
+    plain = tmp_path / "plain.yml"
+    plain.write_text("services:\n  app:\n    image: app:latest\n", encoding="utf-8")
+    assert parse_compose_file(plain).tuxcomp is None
+
+
+def test_bootable_containers_filters_registry(tmp_path, monkeypatch):
+    """Only entries saved with boot=true are started by `up --boot`."""
+    from tuxcomp.cli import _bootable_containers, _save_registry
+
+    monkeypatch.delenv("TUXCOMP_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    _save_registry({"container": "db", "boot": True})
+    _save_registry({"container": "lab", "boot": False})
+    _save_registry({"container": "legacy"})
+
+    assert _bootable_containers() == ["db"]
+
+
+def test_boot_script_starts_only_opt_in_projects():
+    """The generated boot script must not start every registered container."""
+    from tuxcomp.cli import BOOT_SCRIPT
+
+    assert "tuxcomp up --boot" in BOOT_SCRIPT
+    assert "up --all" not in BOOT_SCRIPT
