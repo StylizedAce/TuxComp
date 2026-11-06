@@ -1153,6 +1153,18 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     return _cmd_down(args)
 
 
+def _probe_ok(command: list[str], timeout: int = 20) -> bool:
+    """Run a saved health command; True when it exits 0."""
+    cmd = [_proot() if c == "proot-distro" else c for c in command]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, check=False
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _start_from_entry(entry: dict, health_timeout: int) -> int:
     """Start (or restart) a container from its saved registry entry."""
     container = entry["container"]
@@ -1305,21 +1317,37 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     try:
         while True:
             sweep_start = time.time()
-            names = _registered_containers()
+            # Only critical services opt into supervision. Restarting every
+            # registered container would resurrect stacks the operator
+            # deliberately stopped (labs, one-off tools).
+            names = _bootable_containers()
             if not names:
-                print("no registered containers to supervise")
+                print("no boot-enabled containers to supervise")
                 if args.once:
                     return 0
             running = _running_containers()
             for name in names:
-                if name in running:
-                    failures.pop(name, None)
-                    backoff.pop(name, None)
-                    continue
-                if time.time() < backoff.get(name, 0):
-                    continue
                 entry = _load_registry(name)
                 if not entry:
+                    continue
+
+                if name in running:
+                    # A proot session can outlive the process inside it (e.g. the
+                    # app crashed or was frozen). Probe the health command so a
+                    # "running" container that serves nothing still gets restarted.
+                    health = entry.get("health")
+                    if not health or _probe_ok(health):
+                        failures.pop(name, None)
+                        backoff.pop(name, None)
+                        continue
+                    failures[name] = failures.get(name, 0) + 1
+                    if failures[name] < 2:
+                        continue
+                    print(f"[{_stamp()}] {name} is up but unhealthy - restarting")
+                    _stop_container(name)
+                    failures[name] = 0
+
+                if time.time() < backoff.get(name, 0):
                     continue
                 print(f"[{_stamp()}] {name} is down - restarting")
                 if _start_from_entry(entry, args.health_timeout) == 0:

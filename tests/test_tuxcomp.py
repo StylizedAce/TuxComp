@@ -1686,3 +1686,34 @@ def test_boot_script_starts_only_opt_in_projects():
 
     assert "tuxcomp up --boot" in BOOT_SCRIPT
     assert "up --all" not in BOOT_SCRIPT
+
+
+def test_service_start_uses_image_entrypoint(tmp_path):
+    """Image-CMD services must start via `proot-distro run`, not a placeholder.
+
+    Replaying a `sleep infinity` shell from the registry left containers
+    "running" while the service inside was dead - the API stayed at 502 after
+    a reboot even though `tuxcomp ps` said it was up.
+    """
+    from tuxcomp.parser import parse_compose_file
+    from tuxcomp.planner import service_start_command
+
+    f = tmp_path / "entry.yml"
+    f.write_text(
+        "services:\n"
+        "  api:\n"
+        "    image: python:3.13-slim\n"
+        "  web:\n"
+        "    image: nginx:alpine\n"
+        "    command: [\"nginx\", \"-g\", \"daemon off;\"]\n",
+        encoding="utf-8",
+    )
+    project = parse_compose_file(f)
+
+    api_cmd = service_start_command(project, project.get("api"), "p-api")
+    assert api_cmd[:3] == ["proot-distro", "run", "p-api"]
+    assert "sleep infinity" not in " ".join(api_cmd)
+
+    web_cmd = service_start_command(project, project.get("web"), "p-web")
+    assert web_cmd[:3] == ["proot-distro", "login", "p-web"]
+    assert "nginx" in " ".join(web_cmd)

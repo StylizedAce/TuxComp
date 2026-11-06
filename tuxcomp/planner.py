@@ -445,10 +445,22 @@ def service_start_command(
     container: str,
     detach: bool = True,
 ) -> list[str]:
-    """Full proot-distro login command that starts a service container (log-captured).
+    """Start command for a service container, replayable from the registry.
 
-    Shared by the up plan and the `start` command (replay via registry).
+    Shared by the up plan, `start`, `up --boot` and the `serve` supervisor, so
+    it must match what the plan does. A service that relies on the image's own
+    CMD/ENTRYPOINT has to use `proot-distro run`; starting it with a placeholder
+    shell would leave it "running" while serving nothing.
     """
+    if not service.entrypoint and not service.command:
+        cmd = ["proot-distro", "run", container]
+        cmd += bind_args(project, service, volume_dirs_for(project))
+        cmd += env_args(service)
+        cmd += resource_env(service)
+        if detach:
+            cmd.append("-d")
+        return cmd
+
     cmd = ["proot-distro", "login", container]
     cmd += bind_args(project, service, volume_dirs_for(project))
     cmd += env_args(service)
@@ -461,8 +473,6 @@ def service_start_command(
         inner += service.entrypoint
     if service.command:
         inner += service.command
-    else:
-        inner = ["/bin/sh", "-c", "echo '[tuxcomp] container started'; exec sleep infinity"]
     logfile = f"/var/log/tuxcomp/{container}.log"
     shell = (
         f"mkdir -p /var/log/tuxcomp && "

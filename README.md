@@ -84,7 +84,7 @@ tuxcomp deploy -f docker-compose.yml
 | `tuxcomp setup --adb` | Host-side: apply the Android background/cached-process tweaks via adb (dry-run unless `--apply`; `--restart-termux` force-stops Termux) |
 | `tuxcomp wake on\|off\|status` | Manage the Termux wake lock |
 | `tuxcomp boot install\|status\|remove` | Termux:Boot startup script (wake lock + sshd + `up --boot` + serve) |
-| `tuxcomp serve` | Supervise containers; restart dead ones with backoff (`--detach`, `--status`, `--stop`) |
+| `tuxcomp serve` | Supervise `boot: true` containers; restart dead ones with backoff (`--detach`, `--status`, `--stop`) |
 
 ## Start on boot
 
@@ -106,6 +106,11 @@ tuxcomp boot status
 The generated script holds a wake lock, starts `sshd`, runs `tuxcomp up --boot`
 (only `boot: true` projects, skipping anything already running) and then
 `tuxcomp serve --wake-lock` to restart containers that die later.
+
+`tuxcomp serve` also probes each supervised container's healthcheck, so a
+container whose process is alive but no longer answering is restarted too —
+not just one whose session disappeared. Only `boot: true` projects are
+supervised, so a stack you stopped on purpose stays stopped.
 
 Requires **Termux:Boot** from F-Droid, opened once after installing. Projects
 without the flag — labs, one-off tools, heavy model stacks — stay down.
