@@ -231,16 +231,21 @@ def _parse_tuxcomp_project(raw: dict) -> ProjectTuxComp | None:
     ext = raw.get("x-tuxcomp") or {}
     if not isinstance(ext, dict) or not ext:
         return None
-    cloudflared = ext.get("cloudflared") or {}
+    # Only an explicit `cloudflared:` key enables the tunnel steps. Previously
+    # the default `{}` created a CloudflaredConfig for every project that had
+    # any x-tuxcomp block, so unrelated stacks got tunnel noise.
     cf = None
-    if isinstance(cloudflared, dict):
-        cf = CloudflaredConfig(
-            token=str(cloudflared["token"]) if cloudflared.get("token") else None,
-            tunnel=str(cloudflared["tunnel"]) if cloudflared.get("tunnel") else None,
-            container=str(cloudflared["container"]) if cloudflared.get("container") else "tuxcomp-cloudflared",
-        )
-    elif cloudflared is True:
-        cf = CloudflaredConfig()
+    if "cloudflared" in ext:
+        cloudflared = ext.get("cloudflared")
+        if isinstance(cloudflared, dict):
+            cf = CloudflaredConfig(
+                token=str(cloudflared["token"]) if cloudflared.get("token") else None,
+                tunnel=str(cloudflared["tunnel"]) if cloudflared.get("tunnel") else None,
+                container=str(cloudflared["container"]) if cloudflared.get("container") else "tuxcomp-cloudflared",
+            )
+        elif cloudflared is True:
+            cf = CloudflaredConfig()
+        # cloudflared: false / null -> explicitly disabled, cf stays None
     deploy = ext.get("deploy") or {}
     dp = None
     if isinstance(deploy, dict) and deploy:

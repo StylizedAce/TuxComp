@@ -1826,3 +1826,48 @@ def test_runner_skips_provision_for_existing_container(monkeypatch):
     results = runner.run(plan)
     assert results[0].skipped is True
     assert ran == []
+
+
+def test_cloudflared_is_opt_in(tmp_path):
+    """Tunnel steps only appear when the compose explicitly asks for them."""
+    from tuxcomp.planner import build_plan
+    from tuxcomp.parser import parse_compose_file
+
+    base = "services:\n  app:\n    image: app:latest\nx-tuxcomp:\n"
+
+    plain = tmp_path / "plain.yml"
+    plain.write_text(base + "  keep_awake: true\n", encoding="utf-8")
+    p = parse_compose_file(plain)
+    assert p.tuxcomp.cloudflared is None
+    assert not any(s.kind == "tunnel" for s in build_plan(p).steps)
+
+    enabled = tmp_path / "enabled.yml"
+    enabled.write_text(base + "  cloudflared: {}\n", encoding="utf-8")
+    p2 = parse_compose_file(enabled)
+    assert p2.tuxcomp.cloudflared is not None
+    assert any(s.kind == "tunnel" for s in build_plan(p2).steps)
+
+    disabled = tmp_path / "disabled.yml"
+    disabled.write_text(base + "  cloudflared: false\n", encoding="utf-8")
+    p3 = parse_compose_file(disabled)
+    assert p3.tuxcomp.cloudflared is None
+    assert not any(s.kind == "tunnel" for s in build_plan(p3).steps)
+
+
+def test_maintenance_lock(tmp_path, monkeypatch):
+    """The supervisor stands down while a rebuild holds the lock."""
+    from tuxcomp import cli
+
+    monkeypatch.delenv("TUXCOMP_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert cli._maintenance_active() is False
+    with cli._maintenance("test"):
+        assert cli._maintenance_active() is True
+    assert cli._maintenance_active() is False
+
+    # A lock left behind by a crashed rebuild must not disable supervision.
+    stale = cli._maintenance_lock_path()
+    Path(stale).write_text("0\nstale\n", encoding="utf-8")
+    assert cli._maintenance_active() is False
+    assert not os.path.exists(stale)

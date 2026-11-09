@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from tuxcomp import __version__
@@ -621,6 +622,51 @@ def _q(s: str) -> str:
     return s if s and s.replace("_", "").replace("-", "").isalnum() else repr(s)
 
 
+def _maintenance_lock_path() -> str:
+    return os.path.join(_tux_root(), "maintenance.lock")
+
+
+@contextmanager
+def _maintenance(reason: str):
+    """Pause the supervisor while containers are being removed/recreated.
+
+    Without this, `serve` sees a container disappear mid-rebuild and starts the
+    registry command against a rootfs that is not provisioned yet (no python3),
+    racing the install/provision steps.
+    """
+    path = _maintenance_lock_path()
+    os.makedirs(_tux_root(), exist_ok=True)
+    try:
+        Path(path).write_text(f"{time.time()}\n{reason}\n", encoding="utf-8")
+    except OSError:
+        pass
+    try:
+        yield
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _maintenance_active(max_age: float = 900.0) -> bool:
+    """True while a rebuild/recreate holds the lock (stale locks are ignored)."""
+    path = _maintenance_lock_path()
+    if not os.path.exists(path):
+        return False
+    try:
+        stamp = float(Path(path).read_text(encoding="utf-8").splitlines()[0])
+    except (OSError, ValueError, IndexError):
+        stamp = 0.0
+    if time.time() - stamp > max_age:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return False
+    return True
+
+
 def _project_containers(project) -> list[tuple[str, bool]]:
     """(container, has_build) for the project's own services (shared ones skipped)."""
     out: list[tuple[str, bool]] = []
@@ -654,6 +700,15 @@ def _recreate_services(project, rebuild: bool = False, force: bool = False) -> N
 
 
 def _cmd_up(args: argparse.Namespace) -> int:
+    # Recreating containers is disruptive; tell the supervisor to stand down so
+    # it cannot start a half-provisioned rootfs while we remove/reinstall it.
+    if args.rebuild or args.force_recreate:
+        with _maintenance("up --rebuild/--force-recreate"):
+            return _up_impl(args)
+    return _up_impl(args)
+
+
+def _up_impl(args: argparse.Namespace) -> int:
     # docker-style: tuxcomp up a b c starts containers from saved config (no compose).
     # tuxcomp up --all starts every registered container.
     # tuxcomp up --boot starts only containers whose project opted in via
@@ -1430,6 +1485,14 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     backoff: dict[str, float] = {}
     try:
         while True:
+            if _maintenance_active():
+                # A rebuild/recreate is in progress. Starting containers now
+                # would race the install/provision steps.
+                if args.once:
+                    print("maintenance in progress - skipping sweep")
+                    return 0
+                time.sleep(min(5.0, max(1.0, args.interval)))
+                continue
             sweep_start = time.time()
             # Only critical services opt into supervision. Restarting every
             # registered container would resurrect stacks the operator
@@ -1583,6 +1646,11 @@ def _rmi_compose(args: argparse.Namespace, force: bool = False) -> int:
 
 
 def _cmd_rebuild(args: argparse.Namespace) -> int:
+    with _maintenance("rebuild"):
+        return _rebuild_impl(args)
+
+
+def _rebuild_impl(args: argparse.Namespace) -> int:
     # docker-style: tuxcomp rebuild <container> -> remove + re-up from saved compose
     if not args.file:
         if not args.container:
@@ -1654,13 +1722,17 @@ def _remove_container(container: str) -> int:
 
 def _run_up(compose_file: str, args: argparse.Namespace, preserve_created: str | None = None) -> int:
     """Re-run tuxcomp up on a compose file (rebuild path)."""
+    # A fresh rootfs has to apt-install and then pip-install (venv) before the
+    # service answers. The normal 120s health window is too short for that, so
+    # rebuild gets a longer grace period instead of failing on first boot.
+    health_timeout = max(args.health_timeout, 300)
     up_args = [
         sys.argv[0] if sys.argv and sys.argv[0] else "tuxcomp",
         "up",
         "-f",
         compose_file,
         "--health-timeout",
-        str(args.health_timeout),
+        str(health_timeout),
     ]
     if getattr(args, "verbose", False):
         up_args.append("-v")
