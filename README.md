@@ -67,6 +67,8 @@ tuxcomp deploy -f docker-compose.yml
 | `tuxcomp up -f compose.yml` | Provision + start services |
 | `tuxcomp up a b c` / `tuxcomp up --all` | Start registered containers from saved config |
 | `tuxcomp up --boot` | Start only projects that opted into `x-tuxcomp.boot: true` (what the boot script runs) |
+| `tuxcomp up --force-recreate -f compose.yml` | Stop running services first so synced code is reloaded |
+| `tuxcomp up --rebuild -f compose.yml` | Remove build-service containers so images are rebuilt |
 | `tuxcomp down -f compose.yml` | Stop services (keeps state) |
 | `tuxcomp down a b c` / `tuxcomp down --all` | Stop registered containers (--all includes tunnels) |
 | `tuxcomp start <container>` | Restart a container from its saved config |
@@ -75,7 +77,7 @@ tuxcomp deploy -f docker-compose.yml
 | `tuxcomp logs <service>` | Tail container logs |
 | `tuxcomp exec <container> <cmd>` | Run a command inside a container |
 | `tuxcomp rebuild <container>` | Stop + remove + re-up with new code |
-| `tuxcomp deploy -f compose.yml` | Upgrade tuxcomp on target, push files, start stack |
+| `tuxcomp deploy -f compose.yml` | Upgrade tuxcomp on target, push files, recreate services (rebuilds images when source is baked in) |
 | `tuxcomp remote test <name>` | Check key SSH, remote tuxcomp version and device |
 | `tuxcomp remote bootstrap <name>` | Create/plant an SSH key over the first password login (Windows-friendly) |
 | `tuxcomp plan -f compose.yml` | Print what would run, without running it |
@@ -118,6 +120,18 @@ without the flag — labs, one-off tools, heavy model stacks — stay down.
 If a tunneled service must survive a reboot, set `boot: true` at the project
 level as well, otherwise the tunnel comes back but the service it points at
 does not.
+
+## Deploy
+
+`tuxcomp deploy` pushes the compose file and the `sync:` paths, then runs
+`tuxcomp up --force-recreate` on the target so the running services actually
+reload the new files. If a synced path lives inside a service's build context,
+it adds `--rebuild` and the image is rebuilt too — otherwise that service would
+keep running the old image.
+
+A plain `tuxcomp up -f compose.yml` does **not** restart services that are
+already running; it warns instead. Use `--force-recreate` (and `--rebuild` for
+build services) when you need new code to take effect.
 
 ## Cloudflared
 

@@ -281,6 +281,16 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
     up.add_argument("--no-detach", action="store_true", help="run login without -d (stay attached)")
     up.add_argument("--health-timeout", type=int, default=120)
     up.add_argument("--force-ports", action="store_true", help="skip the port-conflict check")
+    up.add_argument(
+        "--force-recreate",
+        action="store_true",
+        help="stop running project containers first so synced code is actually reloaded",
+    )
+    up.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="remove build-service containers first so their images are rebuilt",
+    )
 
     down = sub.add_parser("down", parents=[parent], help="stop services (soft stop: keep containers/volumes/state)")
     down.add_argument("container", nargs="*", help="container name(s) to stop (no -f needed)")
@@ -611,6 +621,38 @@ def _q(s: str) -> str:
     return s if s and s.replace("_", "").replace("-", "").isalnum() else repr(s)
 
 
+def _project_containers(project) -> list[tuple[str, bool]]:
+    """(container, has_build) for the project's own services (shared ones skipped)."""
+    out: list[tuple[str, bool]] = []
+    for service in project.service_list():
+        if service.tuxcomp and service.tuxcomp.reuse:
+            continue
+        container = service.container() or f"{project.name}-{service.name}"
+        out.append((container, bool(service.build)))
+    return out
+
+
+def _recreate_services(project, rebuild: bool = False, force: bool = False) -> None:
+    """Make `up` actually replace running services.
+
+    Syncing files into a running container does nothing: the old process keeps
+    serving. `--force-recreate` stops running services so the start step runs
+    again, and `--rebuild` additionally removes build-service containers so
+    their images are rebuilt from the synced source.
+    """
+    running = _running_containers()
+    installed = set(_installed_containers())
+    for container, has_build in _project_containers(project):
+        if rebuild and has_build:
+            if container in installed or container in running:
+                print(f"rebuild {container} (removing the old container)")
+                _remove_container(container)
+            continue
+        if (force or rebuild) and container in running:
+            print(f"stop {container} (recreating to load synced files)")
+            _stop_container(container)
+
+
 def _cmd_up(args: argparse.Namespace) -> int:
     # docker-style: tuxcomp up a b c starts containers from saved config (no compose).
     # tuxcomp up --all starts every registered container.
@@ -632,8 +674,18 @@ def _cmd_up(args: argparse.Namespace) -> int:
         if not containers:
             print("no registered containers to start")
             return 0
+        if args.rebuild:
+            print(
+                "error: --rebuild needs -f <compose> - the registry has no build context",
+                file=sys.stderr,
+            )
+            return 1
         failed = 0
+        running_now = _running_containers() if args.force_recreate else set()
         for name in containers:
+            if name in running_now:
+                print(f"stop {name} (recreating to load synced files)")
+                _stop_container(name)
             start_args = argparse.Namespace(
                 container=name,
                 health_timeout=args.health_timeout,
@@ -657,6 +709,19 @@ def _cmd_up(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         return _print_plan(plan, verbose=args.verbose)
+
+    if args.rebuild or args.force_recreate:
+        _recreate_services(project, rebuild=args.rebuild, force=args.force_recreate)
+    else:
+        running = _running_containers()
+        stale = [c for c, _ in _project_containers(project) if c in running]
+        if stale:
+            print(
+                "warning: already running: " + ", ".join(stale) + "\n"
+                "         synced files will NOT be reloaded - re-run with "
+                "--force-recreate (add --rebuild for build services)",
+                file=sys.stderr,
+            )
 
     guard_failed = _prebuilt_guard(project)
     if guard_failed:
@@ -1751,6 +1816,28 @@ def _prefetch_wheels(project, deploy) -> int:
     return 0
 
 
+def _sync_touches_build(project, deploy) -> bool:
+    """True when a synced path lives inside a build context.
+
+    Those services bake their source into the image, so a restart alone would
+    keep running the old code - the deploy has to rebuild them.
+    """
+    contexts = []
+    for service in project.service_list():
+        if service.build:
+            contexts.append(
+                os.path.normpath(os.path.join(project.source_dir, service.build.context))
+            )
+    if not contexts:
+        return False
+    for rel in deploy.sync:
+        path = os.path.normpath(os.path.join(project.source_dir, rel))
+        for ctx in contexts:
+            if path == ctx or path.startswith(ctx + os.sep):
+                return True
+    return False
+
+
 def _cmd_deploy(args: argparse.Namespace) -> int:
     try:
         project = _load_project(args)
@@ -1894,12 +1981,21 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
             if _scp(host, port, src, dest) != 0:
                 return 1
 
-    # 5. up on the phone
+    # 5. up on the phone. A deploy must always recreate: syncing files into a
+    #    running container leaves the old process (and old code) serving.
+    #    Build services are rebuilt when the synced files are inside their
+    #    build context, otherwise they would run a stale image.
     compose_base = os.path.basename(compose_src)
+    flags = " --force-recreate"
+    if _sync_touches_build(project, deploy):
+        flags += " --rebuild"
+        print("  -> recreating services (source is baked into an image: rebuilding)")
+    else:
+        print("  -> recreating services")
     return _ssh(
         host,
         port,
-        f"cd {shlex.quote(remote_root)} && tuxcomp up -f {shlex.quote(compose_base)}",
+        f"cd {shlex.quote(remote_root)} && tuxcomp up{flags} -f {shlex.quote(compose_base)}",
     )
 
 

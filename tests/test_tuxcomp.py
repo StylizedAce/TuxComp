@@ -1717,3 +1717,66 @@ def test_service_start_uses_image_entrypoint(tmp_path):
     web_cmd = service_start_command(project, project.get("web"), "p-web")
     assert web_cmd[:3] == ["proot-distro", "login", "p-web"]
     assert "nginx" in " ".join(web_cmd)
+
+
+def test_sync_touches_build(tmp_path):
+    """Deploy must rebuild when synced files live inside a build context."""
+    from tuxcomp.cli import _sync_touches_build
+    from tuxcomp.parser import parse_compose_file
+
+    (tmp_path / "service").mkdir()
+    (tmp_path / "service" / "main.py").write_text("x", encoding="utf-8")
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "index.html").write_text("x", encoding="utf-8")
+
+    src = tmp_path / "src.yml"
+    src.write_text(
+        "services:\n  api:\n    build: ./service\n"
+        "x-tuxcomp:\n  deploy:\n    sync: [service/]\n",
+        encoding="utf-8",
+    )
+    project = parse_compose_file(src)
+    assert _sync_touches_build(project, project.tuxcomp.deploy) is True
+
+    static = tmp_path / "static.yml"
+    static.write_text(
+        "services:\n  api:\n    build: ./service\n"
+        "x-tuxcomp:\n  deploy:\n    sync: [dist/]\n",
+        encoding="utf-8",
+    )
+    p2 = parse_compose_file(static)
+    assert _sync_touches_build(p2, p2.tuxcomp.deploy) is False
+
+
+def test_recreate_services_rebuilds_build_and_stops_rest(tmp_path, monkeypatch):
+    """--rebuild removes build containers; --force-recreate stops the others."""
+    from tuxcomp import cli
+    from tuxcomp.parser import parse_compose_file
+
+    f = tmp_path / "recreate.yml"
+    f.write_text(
+        "services:\n"
+        "  api:\n"
+        "    build: .\n"
+        "    container_name: p-api\n"
+        "  web:\n"
+        "    image: nginx\n"
+        "    container_name: p-web\n"
+        "  idle:\n"
+        "    image: nginx\n"
+        "    container_name: p-idle\n",
+        encoding="utf-8",
+    )
+    project = parse_compose_file(f)
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(cli, "_running_containers", lambda: {"p-api", "p-web"})
+    monkeypatch.setattr(cli, "_installed_containers", lambda: ["p-api", "p-web"])
+    monkeypatch.setattr(cli, "_stop_container", lambda c: calls.append(("stop", c)) or 0)
+    monkeypatch.setattr(cli, "_remove_container", lambda c: calls.append(("remove", c)) or 0)
+
+    cli._recreate_services(project, rebuild=True, force=True)
+
+    assert ("remove", "p-api") in calls
+    assert ("stop", "p-web") in calls
+    assert ("stop", "p-idle") not in calls
