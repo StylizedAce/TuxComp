@@ -1822,16 +1822,17 @@ def _sync_touches_build(project, deploy) -> bool:
     Those services bake their source into the image, so a restart alone would
     keep running the old code - the deploy has to rebuild them.
     """
+    # source_dir is "." when deploy is invoked with a relative compose path,
+    # so everything must be resolved to absolute paths before comparing.
+    root = os.path.abspath(project.source_dir)
     contexts = []
     for service in project.service_list():
         if service.build:
-            contexts.append(
-                os.path.normpath(os.path.join(project.source_dir, service.build.context))
-            )
+            contexts.append(os.path.abspath(os.path.join(root, service.build.context)))
     if not contexts:
         return False
     for rel in deploy.sync:
-        path = os.path.normpath(os.path.join(project.source_dir, rel))
+        path = os.path.abspath(os.path.join(root, rel))
         for ctx in contexts:
             if path == ctx or path.startswith(ctx + os.sep):
                 return True

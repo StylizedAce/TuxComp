@@ -1719,7 +1719,7 @@ def test_service_start_uses_image_entrypoint(tmp_path):
     assert "nginx" in " ".join(web_cmd)
 
 
-def test_sync_touches_build(tmp_path):
+def test_sync_touches_build(tmp_path, monkeypatch):
     """Deploy must rebuild when synced files live inside a build context."""
     from tuxcomp.cli import _sync_touches_build
     from tuxcomp.parser import parse_compose_file
@@ -1737,6 +1737,13 @@ def test_sync_touches_build(tmp_path):
     )
     project = parse_compose_file(src)
     assert _sync_touches_build(project, project.tuxcomp.deploy) is True
+
+    # deploy is normally invoked from the project dir with a relative compose
+    # path; source_dir is then "." and the comparison must still work.
+    monkeypatch.chdir(tmp_path)
+    relative = parse_compose_file(Path("src.yml"))
+    assert relative.source_dir == "."
+    assert _sync_touches_build(relative, relative.tuxcomp.deploy) is True
 
     static = tmp_path / "static.yml"
     static.write_text(
