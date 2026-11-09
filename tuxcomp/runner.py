@@ -98,6 +98,13 @@ class Runner:
                 return command[i + 1]
         return None
 
+    def _login_target(self, command: list[str]) -> str | None:
+        """Container name for a `proot-distro login <container> ...` step."""
+        for i, part in enumerate(command):
+            if part == "login" and i + 1 < len(command):
+                return command[i + 1]
+        return None
+
     def run(self, plan: Plan, health_timeout: int = 120) -> list[RunResult]:
         self.results = []
         built: set[str] = set()
@@ -130,6 +137,17 @@ class Runner:
                         RunResult(step.title, step.service, True, "container already exists", True)
                     )
                     print(f"[OK ] [{step.service}] {step.title} (skipped: already exists)")
+                    continue
+            if step.kind == "provision":
+                # The container was provisioned when it was installed. Re-running
+                # apt on every `up` is slow and fails hard on a stale dpkg state
+                # left by an interrupted run, aborting the deploy before start.
+                target = self._login_target(step.command)
+                if target and target in installed:
+                    self.results.append(
+                        RunResult(step.title, step.service, True, "already provisioned", True)
+                    )
+                    print(f"[OK ] [{step.service}] {step.title} (skipped: already provisioned)")
                     continue
             if step.kind == "health":
                 result = self._run_health(step, health_timeout)

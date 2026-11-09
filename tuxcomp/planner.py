@@ -570,6 +570,9 @@ def bind_args(project: Project, service: Service, volume_dirs: dict[str, str]) -
 
 def _apt_install_command(container: str, packages: list[str]) -> list[str]:
     shell = (
+        # A previous apt run interrupted by a stop/reboot leaves dpkg in a
+        # half-configured state, which makes every later apt call fail.
+        "DEBIAN_FRONTEND=noninteractive dpkg --configure -a || true; "
         "DEBIAN_FRONTEND=noninteractive apt-get update -qq && "
         f"DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {' '.join(packages)}"
     )

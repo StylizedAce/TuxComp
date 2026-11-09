@@ -1787,3 +1787,42 @@ def test_recreate_services_rebuilds_build_and_stops_rest(tmp_path, monkeypatch):
     assert ("remove", "p-api") in calls
     assert ("stop", "p-web") in calls
     assert ("stop", "p-idle") not in calls
+
+
+def test_apt_install_recovers_dpkg_state():
+    """A half-configured dpkg must not abort provisioning."""
+    from tuxcomp.planner import _apt_install_command
+
+    cmd = _apt_install_command("c", ["curl"])
+    shell = cmd[-1]
+    assert "dpkg --configure -a" in shell
+    assert shell.index("dpkg --configure -a") < shell.index("apt-get update")
+
+
+def test_runner_skips_provision_for_existing_container(monkeypatch):
+    """`up` must not re-run apt inside an already-provisioned container."""
+    from tuxcomp.planner import Plan, Step
+    from tuxcomp.runner import Runner, RunResult
+
+    runner = Runner()
+    monkeypatch.setattr(runner, "_installed_container_names", lambda: {"p-api"})
+    ran: list[str] = []
+    monkeypatch.setattr(
+        runner,
+        "_run_step",
+        lambda step: ran.append(step.title) or RunResult(step.title, step.service, True),
+    )
+    plan = Plan(
+        project_name="p",
+        steps=[
+            Step(
+                kind="provision",
+                service="api",
+                title="apt install curl",
+                command=["proot-distro", "login", "p-api", "--", "true"],
+            )
+        ],
+    )
+    results = runner.run(plan)
+    assert results[0].skipped is True
+    assert ran == []
