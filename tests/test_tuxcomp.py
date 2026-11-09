@@ -807,9 +807,10 @@ def test_deploy_upgrades_outdated_tuxcomp(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     args = _parse_args(["deploy", "-f", "compose.yml"])
     assert _cmd_deploy(args) == 0
-    # First SSH call is the pip upgrade, not mkdir.
+    # pip upgrade, then supervisor refresh (new code), then the sync steps.
     assert calls[0][0] == "ssh" and "pip install --upgrade" in calls[0][-1]
-    assert calls[1][0] == "ssh" and "mkdir -p" in calls[1][-1]
+    assert calls[1][0] == "ssh" and "serve --refresh" in calls[1][-1]
+    assert calls[2][0] == "ssh" and "mkdir -p" in calls[2][-1]
 
 
 def test_deploy_syncs_env_file(tmp_path, monkeypatch, capsys):
@@ -1871,3 +1872,29 @@ def test_maintenance_lock(tmp_path, monkeypatch):
     Path(stale).write_text("0\nstale\n", encoding="utf-8")
     assert cli._maintenance_active() is False
     assert not os.path.exists(stale)
+
+
+def test_serve_pidfile_records_version(tmp_path, monkeypatch):
+    """The pidfile carries the version so --refresh can detect a stale supervisor."""
+    from tuxcomp import cli
+
+    monkeypatch.delenv("TUXCOMP_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    Path(cli._tux_root()).mkdir(parents=True, exist_ok=True)
+    Path(cli._serve_pid_path()).write_text("4242\n1.2.3\n", encoding="utf-8")
+
+    assert cli._serve_pid_version() == "1.2.3"
+    # a dead pid is not reported as running (and /proc is absent on Windows)
+    assert cli._serve_running_pid() is None
+
+
+def test_serve_supervisor_cmdline_matching():
+    """Management commands must not be mistaken for the supervisor loop."""
+    from tuxcomp.cli import _cmdline_is_supervisor
+
+    assert _cmdline_is_supervisor("python -m tuxcomp serve --interval 15 --wake-lock")
+    assert _cmdline_is_supervisor("/data/data/com.termux/files/usr/bin/tuxcomp serve --wake-lock")
+    assert not _cmdline_is_supervisor("python -m tuxcomp serve --status")
+    assert not _cmdline_is_supervisor("python -m tuxcomp serve --refresh")
+    assert not _cmdline_is_supervisor("python -m tuxcomp serve --stop")
+    assert not _cmdline_is_supervisor("python -m tuxcomp up")

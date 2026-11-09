@@ -365,6 +365,11 @@ def _parse_args(args: list[str] | None = None) -> argparse.Namespace:
     )
     serve.add_argument("--status", action="store_true", help="report the detached supervisor")
     serve.add_argument("--stop", action="store_true", help="stop the detached supervisor")
+    serve.add_argument(
+        "--refresh",
+        action="store_true",
+        help="restart the supervisor if it is running (picks up a new tuxcomp version)",
+    )
 
     logs = sub.add_parser("logs", parents=[parent], help="show service/container logs")
     logs.add_argument("service", nargs="?", help="container or service name (default: all services with -f)")
@@ -1360,8 +1365,18 @@ def _serve_log_path() -> str:
     return os.path.join(_tux_root(), "serve.log")
 
 
+_SERVE_MANAGEMENT_FLAGS = ("--status", "--stop", "--refresh", "--detach", "--once")
+
+
+def _cmdline_is_supervisor(text: str) -> bool:
+    """True for a real `tuxcomp serve` loop, not a status/stop/refresh command."""
+    if "tuxcomp" not in text or " serve" not in f" {text}":
+        return False
+    return not any(flag in text.split() for flag in _SERVE_MANAGEMENT_FLAGS)
+
+
 def _pid_is_serve(pid: int) -> bool:
-    """True when `pid` is alive and is a tuxcomp serve process."""
+    """True when `pid` is alive and is a tuxcomp serve supervisor."""
     try:
         os.kill(pid, 0)
     except OSError:
@@ -1373,17 +1388,21 @@ def _pid_is_serve(pid: int) -> bool:
             text = cmdline.read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
         except OSError:
             return True
-        return "tuxcomp" in text and " serve" in f" {text}"
+        return _cmdline_is_supervisor(text)
     return True
 
 
 def _find_serve_pid() -> int | None:
-    """Scan /proc for a live `tuxcomp serve` (used when the pidfile is stale)."""
+    """Scan /proc for a live supervisor (used when the pidfile is stale)."""
     proc = Path("/proc")
     if not proc.exists():
         return None
+    skip = {os.getpid(), os.getppid()}
     for entry in proc.iterdir():
         if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid in skip:
             continue
         try:
             text = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode(
@@ -1391,9 +1410,18 @@ def _find_serve_pid() -> int | None:
             )
         except OSError:
             continue
-        if "tuxcomp" in text and " serve" in f" {text}":
-            return int(entry.name)
+        if _cmdline_is_supervisor(text):
+            return pid
     return None
+
+
+def _serve_pid_version() -> str | None:
+    """Version recorded by the running supervisor's pidfile, if any."""
+    try:
+        lines = Path(_serve_pid_path()).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    return lines[1].strip() if len(lines) > 1 else None
 
 
 def _serve_running_pid() -> int | None:
@@ -1401,8 +1429,8 @@ def _serve_running_pid() -> int | None:
     pid: int | None = None
     if os.path.exists(path):
         try:
-            pid = int(Path(path).read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
+            pid = int(Path(path).read_text(encoding="utf-8").splitlines()[0].strip())
+        except (OSError, ValueError, IndexError):
             pid = None
     if pid is not None and _pid_is_serve(pid):
         return pid
@@ -1412,7 +1440,9 @@ def _serve_running_pid() -> int | None:
     found = _find_serve_pid()
     if found:
         try:
-            Path(path).write_text(str(found), encoding="utf-8")
+            # Keep the version line so the next status/refresh knows what the
+            # recovered supervisor is running.
+            Path(path).write_text(f"{found}\n{__version__}\n", encoding="utf-8")
         except OSError:
             pass
         return found
@@ -1424,11 +1454,39 @@ def _serve_running_pid() -> int | None:
     return None
 
 
+def _serve_stop(pid: int) -> int:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        print(f"error: could not stop serve pid {pid}: {exc}", file=sys.stderr)
+        return 1
+    # Wait for the process to actually exit, otherwise the /proc scan in
+    # _serve_running_pid still finds it and a refresh refuses to start a new one.
+    deadline = time.time() + 5.0
+    while time.time() < deadline and _pid_is_serve(pid):
+        time.sleep(0.2)
+    try:
+        os.remove(_serve_pid_path())
+    except OSError:
+        pass
+    print(f"serve: stopped (pid {pid})")
+    return 0
+
+
 def _serve_detach(args: argparse.Namespace) -> int:
     pid = _serve_running_pid()
     if pid:
-        print(f"serve: already running (pid {pid})")
-        return 0
+        running_version = _serve_pid_version()
+        if running_version and running_version != __version__:
+            print(
+                f"serve: restarting supervisor (running {running_version}, "
+                f"this is {__version__})"
+            )
+            if _serve_stop(pid) != 0:
+                return 1
+        else:
+            print(f"serve: already running (pid {pid})")
+            return 0
     os.makedirs(_tux_root(), exist_ok=True)
     cmd = [sys.executable, "-m", "tuxcomp", "serve", "--interval", str(args.interval)]
     if args.wake_lock:
@@ -1446,7 +1504,7 @@ def _serve_detach(args: argparse.Namespace) -> int:
         return 1
     finally:
         log.close()
-    Path(_serve_pid_path()).write_text(str(proc.pid), encoding="utf-8")
+    Path(_serve_pid_path()).write_text(f"{proc.pid}\n{__version__}\n", encoding="utf-8")
     print(f"serve: started in the background (pid {proc.pid})")
     print(f"  log: {_serve_log_path()}")
     return 0
@@ -1457,26 +1515,32 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         pid = _serve_running_pid()
         if pid:
             print(f"serve: running (pid {pid})")
+            print(f"  version: {_serve_pid_version() or 'unknown'}")
             print(f"  log: {_serve_log_path()}")
         else:
             print("serve: not running (no detached supervisor)")
         return 0
+    if getattr(args, "refresh", False):
+        pid = _serve_running_pid()
+        if not pid:
+            print("serve: not running - nothing to refresh")
+            return 0
+        running_version = _serve_pid_version()
+        if running_version == __version__:
+            print(f"serve: already on {__version__} (pid {pid})")
+            return 0
+        print(
+            f"serve: refreshing supervisor ({running_version or 'unknown'} -> {__version__})"
+        )
+        if _serve_stop(pid) != 0:
+            return 1
+        return _serve_detach(args)
     if args.stop:
         pid = _serve_running_pid()
         if not pid:
             print("serve: not running (no detached supervisor)")
             return 0
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError as exc:
-            print(f"error: could not stop serve pid {pid}: {exc}", file=sys.stderr)
-            return 1
-        try:
-            os.remove(_serve_pid_path())
-        except OSError:
-            pass
-        print(f"serve: stopped (pid {pid})")
-        return 0
+        return _serve_stop(pid)
     if args.detach:
         return _serve_detach(args)
     if args.wake_lock and _acquire_wake_lock() != 0:
@@ -1999,6 +2063,10 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     # 0b. self-upgrade tuxcomp on the target so the phone always runs the
     #     latest tooling before any service is pushed.
     remote_version = _ssh_out(host, port, "tuxcomp --version 2>/dev/null || echo none")
+    tuxcomp_changed = (
+        not remote_version.startswith("tuxcomp ")
+        or remote_version != f"tuxcomp {__version__}"
+    )
     if remote_version.startswith("tuxcomp "):
         if remote_version != f"tuxcomp {__version__}":
             print(f"  → older tuxcomp on target ({remote_version}); upgrading to tuxcomp {__version__}")
@@ -2022,6 +2090,10 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
             "    Development builds newer than GitHub need the wheel install (docs/VERSIONING.md).",
             file=sys.stderr,
         )
+    # The supervisor is its own process: upgrading tuxcomp does not change the
+    # code it runs, so restart it (only after a version change).
+    if tuxcomp_changed:
+        _ssh(host, port, "tuxcomp serve --refresh 2>&1 | tail -2")
 
     _print_deploy_warnings(host, port)
 
