@@ -1305,19 +1305,68 @@ def _serve_log_path() -> str:
     return os.path.join(_tux_root(), "serve.log")
 
 
-def _serve_running_pid() -> int | None:
-    path = _serve_pid_path()
-    if not os.path.exists(path):
-        return None
-    try:
-        pid = int(Path(path).read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return None
+def _pid_is_serve(pid: int) -> bool:
+    """True when `pid` is alive and is a tuxcomp serve process."""
     try:
         os.kill(pid, 0)
     except OSError:
+        return False
+    # /proc exists on Termux/Linux; guard for Windows dev machines.
+    cmdline = Path(f"/proc/{pid}/cmdline")
+    if cmdline.exists():
+        try:
+            text = cmdline.read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
+        except OSError:
+            return True
+        return "tuxcomp" in text and " serve" in f" {text}"
+    return True
+
+
+def _find_serve_pid() -> int | None:
+    """Scan /proc for a live `tuxcomp serve` (used when the pidfile is stale)."""
+    proc = Path("/proc")
+    if not proc.exists():
         return None
-    return pid
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            text = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode(
+                "utf-8", "replace"
+            )
+        except OSError:
+            continue
+        if "tuxcomp" in text and " serve" in f" {text}":
+            return int(entry.name)
+    return None
+
+
+def _serve_running_pid() -> int | None:
+    path = _serve_pid_path()
+    pid: int | None = None
+    if os.path.exists(path):
+        try:
+            pid = int(Path(path).read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            pid = None
+    if pid is not None and _pid_is_serve(pid):
+        return pid
+
+    # Pidfile missing or stale (pid reused / supervisor restarted by the boot
+    # script). Find the live process and repair the file so --stop still works.
+    found = _find_serve_pid()
+    if found:
+        try:
+            Path(path).write_text(str(found), encoding="utf-8")
+        except OSError:
+            pass
+        return found
+
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return None
 
 
 def _serve_detach(args: argparse.Namespace) -> int:
