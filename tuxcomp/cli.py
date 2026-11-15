@@ -106,6 +106,77 @@ def _bootable_containers() -> list[str]:
     return names
 
 
+def _boot_order(names: list[str]) -> list[str]:
+    """Topologically order containers by their recorded `depends_on`.
+
+    `up --boot` used to start alphabetically, so an API could come up before its
+    Redis and sit in a reconnect backoff. Dependencies are container names
+    stored in the registry at deploy time; entries without them keep the old
+    alphabetical order. Tunnels are started after the services they expose.
+    """
+    entries = {name: (_load_registry(name) or {}) for name in names}
+    deps = {
+        name: [
+            d
+            for d in (entries[name].get("depends_on") or [])
+            if d in entries and d != name
+        ]
+        for name in names
+    }
+    ordered: list[str] = []
+    seen: set[str] = set()
+    visiting: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in seen or name in visiting:
+            return
+        visiting.add(name)
+        for dep in sorted(deps[name]):
+            visit(dep)
+        visiting.discard(name)
+        seen.add(name)
+        ordered.append(name)
+
+    roots = sorted(names, key=lambda n: (bool(entries[n].get("tunnel")), n))
+    for name in roots:
+        visit(name)
+    for name in roots:
+        if name not in seen:
+            ordered.append(name)
+    return ordered
+
+
+def _duplicate_token_users(token: str, exclude: str) -> list[str]:
+    """Other containers on this host whose saved tunnel token is identical."""
+    out: list[str] = []
+    tokens_dir = _tokens_dir()
+    if not os.path.isdir(tokens_dir):
+        return out
+    for name in sorted(os.listdir(tokens_dir)):
+        if name == exclude:
+            continue
+        try:
+            with open(os.path.join(tokens_dir, name), encoding="utf-8") as fh:
+                if fh.read().strip() == token.strip():
+                    out.append(name)
+        except OSError:
+            continue
+    return out
+
+
+def _warn_shared_token(container: str, token: str) -> None:
+    """Warn when a tunnel token is reused - that makes connectors replicas."""
+    others = _duplicate_token_users(token, container)
+    if not others:
+        return
+    print(
+        f"warning: this tunnel token is also saved for {', '.join(others)}.\n"
+        "         Connectors sharing a token are replicas: Cloudflare splits traffic\n"
+        "         across them, so every hostname must exist on every device using it.",
+        file=sys.stderr,
+    )
+
+
 def _remotes_path() -> str:
     return os.path.join(_tux_root(), "remotes.json")
 
@@ -607,6 +678,11 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     except (ComposeError, PlanError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    if project.tuxcomp and project.tuxcomp.cloudflared and project.tuxcomp.cloudflared.token:
+        _warn_shared_token(
+            project.tuxcomp.cloudflared.container or "tuxcomp-cloudflared",
+            project.tuxcomp.cloudflared.token,
+        )
     return _print_plan(plan, verbose=args.verbose)
 
 
@@ -726,7 +802,9 @@ def _up_impl(args: argparse.Namespace) -> int:
         elif args.boot:
             running = _running_containers()
             containers = [
-                name for name in _bootable_containers() if name not in running
+                name
+                for name in _boot_order(_bootable_containers())
+                if name not in running
             ]
             if not containers:
                 print("no boot-enabled containers to start")
@@ -766,6 +844,12 @@ def _up_impl(args: argparse.Namespace) -> int:
     except (ComposeError, PlanError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+    if project.tuxcomp and project.tuxcomp.cloudflared and project.tuxcomp.cloudflared.token:
+        _warn_shared_token(
+            project.tuxcomp.cloudflared.container or "tuxcomp-cloudflared",
+            project.tuxcomp.cloudflared.token,
+        )
 
     if args.dry_run:
         return _print_plan(plan, verbose=args.verbose)
@@ -808,6 +892,13 @@ def _up_impl(args: argparse.Namespace) -> int:
             continue
         container = service.container() or f"{project.name}-{service.name}"
         ports = [p.host or p.container for p in service.ports]
+        dep_containers = []
+        for dep in service.depends_on:
+            dep_service = project.get(dep)
+            if dep_service:
+                dep_containers.append(
+                    dep_service.container() or f"{project.name}-{dep}"
+                )
         started.append(
             ServiceState(
                 service=service.name,
@@ -844,6 +935,7 @@ def _up_impl(args: argparse.Namespace) -> int:
                 ),
                 "keep_awake": bool(project.tuxcomp and project.tuxcomp.keep_awake),
                 "boot": bool(project.tuxcomp and project.tuxcomp.boot),
+                "depends_on": dep_containers,
             }
         )
     state.update_services(started)
@@ -874,6 +966,7 @@ def _up_impl(args: argparse.Namespace) -> int:
                 (project.tuxcomp and project.tuxcomp.boot)
                 or _existing_tunnel.get("boot")
             ),
+            "depends_on": [],
         })
         print(f"registered tunnel container {tc}")
 
@@ -1379,7 +1472,8 @@ def _pid_is_serve(pid: int) -> bool:
     """True when `pid` is alive and is a tuxcomp serve supervisor."""
     try:
         os.kill(pid, 0)
-    except OSError:
+    except (OSError, SystemError):
+        # Windows raises SystemError for some invalid PIDs.
         return False
     # /proc exists on Termux/Linux; guard for Windows dev machines.
     cmdline = Path(f"/proc/{pid}/cmdline")
@@ -1457,7 +1551,7 @@ def _serve_running_pid() -> int | None:
 def _serve_stop(pid: int) -> int:
     try:
         os.kill(pid, signal.SIGTERM)
-    except OSError as exc:
+    except (OSError, SystemError) as exc:
         print(f"error: could not stop serve pid {pid}: {exc}", file=sys.stderr)
         return 1
     # Wait for the process to actually exit, otherwise the /proc scan in
@@ -1561,7 +1655,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             # Only critical services opt into supervision. Restarting every
             # registered container would resurrect stacks the operator
             # deliberately stopped (labs, one-off tools).
-            names = _bootable_containers()
+            # Start in dependency order so a service never comes up before the
+            # one it needs (e.g. API before Redis).
+            names = _boot_order(_bootable_containers())
             if not names:
                 print("no boot-enabled containers to supervise")
                 if args.once:
@@ -2186,11 +2282,61 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
         print("  -> recreating services (source is baked into an image: rebuilding)")
     else:
         print("  -> recreating services")
-    return _ssh(
+    rc = _ssh(
         host,
         port,
         f"cd {shlex.quote(remote_root)} && tuxcomp up{flags} -f {shlex.quote(compose_base)}",
     )
+    if rc != 0:
+        return rc
+
+    # A deploy can be "up" locally while the tunnel route is still wrong, so
+    # optionally probe the public URLs the compose declares.
+    if deploy.check:
+        print("  -> checking public endpoints")
+        failures = 0
+        for url in deploy.check:
+            ok, detail = _probe_url(url)
+            print(f"  [{'ok' if ok else 'FAIL'}] {detail}")
+            if not ok:
+                failures += 1
+        if failures:
+            print(
+                f"error: {failures} public check(s) failed - the stack is up "
+                f"locally but traffic is not routing",
+                file=sys.stderr,
+            )
+            return 1
+    return 0
+
+
+def _probe_url(url: str, attempts: int = 4, delay: float = 5.0) -> tuple[bool, str]:
+    """GET a public URL after deploy.
+
+    A reachable edge is the point: any status below 500 means Cloudflare routed
+    to the origin (401/403/404 are application decisions). 5xx or a network
+    error means the tunnel/origin is broken. Retries cover DNS propagation.
+    """
+    import urllib.error
+    import urllib.request
+
+    last = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "tuxcomp-deploy-check"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return True, f"{resp.status} {url}"
+        except urllib.error.HTTPError as exc:
+            last = f"HTTP {exc.code} {url}"
+            if exc.code < 500:
+                return True, last
+        except (urllib.error.URLError, OSError) as exc:
+            last = f"{exc} {url}"
+        if attempt < attempts:
+            time.sleep(delay)
+    return False, last
 
 
 def _tokens_dir() -> str:
@@ -2240,6 +2386,7 @@ def _cmd_tunnel_token(args: argparse.Namespace) -> int:
         Path(path).write_text(token, encoding="utf-8")
         os.chmod(path, 0o600)
         print(f"token saved for {container} at {path}")
+        _warn_shared_token(container, token)
         return 0
 
     return 1

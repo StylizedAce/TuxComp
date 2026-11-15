@@ -1898,3 +1898,62 @@ def test_serve_supervisor_cmdline_matching():
     assert not _cmdline_is_supervisor("python -m tuxcomp serve --refresh")
     assert not _cmdline_is_supervisor("python -m tuxcomp serve --stop")
     assert not _cmdline_is_supervisor("python -m tuxcomp up")
+
+
+def test_boot_order_respects_depends_on(tmp_path, monkeypatch):
+    """`up --boot` must start dependencies first, tunnels last."""
+    from tuxcomp.cli import _boot_order, _save_registry
+
+    monkeypatch.delenv("TUXCOMP_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    _save_registry({"container": "api", "boot": True, "depends_on": ["redis"]})
+    _save_registry({"container": "redis", "boot": True})
+    _save_registry({"container": "tunnel", "boot": True, "tunnel": True})
+
+    assert _boot_order(["api", "redis", "tunnel"]) == ["redis", "api", "tunnel"]
+    # entries without depends_on keep the old alphabetical order
+    _save_registry({"container": "alpha", "boot": True})
+    _save_registry({"container": "beta", "boot": True})
+    assert _boot_order(["beta", "alpha"]) == ["alpha", "beta"]
+
+
+def test_duplicate_token_users(tmp_path, monkeypatch):
+    """Reusing a token across containers is detected (replica warning)."""
+    from tuxcomp.cli import _duplicate_token_users
+
+    monkeypatch.delenv("TUXCOMP_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tokens = tmp_path / ".tuxcomp" / "tokens"
+    tokens.mkdir(parents=True)
+    (tokens / "a").write_text("tok-1", encoding="utf-8")
+    (tokens / "b").write_text("tok-1", encoding="utf-8")
+    (tokens / "c").write_text("tok-2", encoding="utf-8")
+
+    assert _duplicate_token_users("tok-1", "a") == ["b"]
+    assert _duplicate_token_users("tok-2", "c") == []
+    assert _duplicate_token_users("tok-1", "z") == ["a", "b"]
+
+
+def test_parse_deploy_check(tmp_path):
+    """deploy.check accepts a string or a list and is exposed on the config."""
+    from tuxcomp.parser import parse_compose_file
+
+    one = tmp_path / "one.yml"
+    one.write_text(
+        "services:\n  app:\n    image: app:latest\n"
+        "x-tuxcomp:\n  deploy:\n    check: https://example.test/health\n",
+        encoding="utf-8",
+    )
+    assert parse_compose_file(one).tuxcomp.deploy.check == ["https://example.test/health"]
+
+    many = tmp_path / "many.yml"
+    many.write_text(
+        "services:\n  app:\n    image: app:latest\n"
+        "x-tuxcomp:\n  deploy:\n    check: [https://a.test, https://b.test]\n",
+        encoding="utf-8",
+    )
+    assert parse_compose_file(many).tuxcomp.deploy.check == [
+        "https://a.test",
+        "https://b.test",
+    ]

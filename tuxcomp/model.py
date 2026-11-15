@@ -77,6 +77,8 @@ class DeployConfig:
     sync: list[str] = field(default_factory=list)
     pip_wheels: bool = False
     requirements: Optional[str] = None
+    # URLs probed after a deploy to prove the tunnel route actually works.
+    check: list[str] = field(default_factory=list)
 
 
 @dataclass

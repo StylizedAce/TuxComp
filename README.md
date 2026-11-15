@@ -109,6 +109,10 @@ The generated script holds a wake lock, starts `sshd`, runs `tuxcomp up --boot`
 (only `boot: true` projects, skipping anything already running) and then
 `tuxcomp serve --wake-lock` to restart containers that die later.
 
+`up --boot` starts containers in **`depends_on` order** (recorded at deploy
+time), so an API never comes up before its Redis. Tunnels start after the
+services they expose. `serve` restarts dead containers in the same order.
+
 `tuxcomp serve` also probes each supervised container's healthcheck, so a
 container whose process is alive but no longer answering is restarted too —
 not just one whose session disappeared. Only `boot: true` projects are
@@ -133,6 +137,20 @@ A plain `tuxcomp up -f compose.yml` does **not** restart services that are
 already running; it warns instead. Use `--force-recreate` (and `--rebuild` for
 build services) when you need new code to take effect.
 
+Add `deploy.check` to probe the public URLs after the push, so a deploy fails
+loudly when the stack is up locally but the tunnel route is wrong:
+
+```yaml
+x-tuxcomp:
+  deploy:
+    check:
+      - https://example.socialvibes.io/api/v1/health
+```
+
+Any status below 500 counts as routed (401/403/404 are application decisions);
+5xx or a DNS/connection error fails the deploy. Checks retry for ~20s to cover
+DNS propagation.
+
 ## Cloudflared
 
 Expose containers to the internet via Cloudflare tunnels. Each tunnel runs in
@@ -151,6 +169,18 @@ x-tuxcomp:
 
 The token is always overwritten on deploy (last owner wins). You can run
 **multiple tunnels** (different accounts) side by side with different names.
+
+**Never reuse one token on two devices unless you mean to replicate.**
+Connectors sharing a token are replicas: Cloudflare load-balances across them,
+so every hostname on that tunnel must exist on every device using it — and a
+service that exists on only one device will fail intermittently. For a second
+server, create a second tunnel and move hostnames at cutover. TuxComp warns when
+two containers on the same host share a token (`tunnel-token`, `plan`, `up`,
+`deploy`).
+
+`tuxcomp tunnel-token list|set|clear` manages the host-side copies
+(`~/.tuxcomp/tokens/<container>`), which are restored after a container is
+recreated or removed.
 
 **Using a tunnel without owning it** (auto-ensure it's running, no token):
 

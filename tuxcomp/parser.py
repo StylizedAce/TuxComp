@@ -252,6 +252,9 @@ def _parse_tuxcomp_project(raw: dict) -> ProjectTuxComp | None:
         sync = deploy.get("sync") or []
         if isinstance(sync, str):
             sync = [sync]
+        checks = deploy.get("check") or []
+        if isinstance(checks, str):
+            checks = [checks]
         dp = DeployConfig(
             host=str(deploy.get("host") or ""),
             port=int(deploy.get("port", 22)),
@@ -260,6 +263,7 @@ def _parse_tuxcomp_project(raw: dict) -> ProjectTuxComp | None:
             sync=[str(p) for p in sync],
             pip_wheels=bool(deploy.get("pip_wheels", False)),
             requirements=str(deploy["requirements"]) if deploy.get("requirements") else None,
+            check=[str(u) for u in checks],
         )
     return ProjectTuxComp(
         cloudflared=cf,
