@@ -1,0 +1,8 @@
+services:
+  db:
+    image: postgres:18
+    container_name: user-pg
+    user: postgres
+    command: ["postgres", "-D", "/tmp/pgdata"]
+    ports:
+      - "5432:5432"

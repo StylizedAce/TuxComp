@@ -101,6 +101,7 @@ class Service:
     container_name: Optional[str] = None
     command: Optional[list[str]] = None
     entrypoint: Optional[list[str]] = None
+    user: Optional[str] = None
     environment: dict[str, str] = field(default_factory=dict)
     env_file: list[str] = field(default_factory=list)
     ports: list[PortMapping] = field(default_factory=list)

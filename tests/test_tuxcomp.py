@@ -6,7 +6,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 
-from tuxcomp.model import Project, Service
+from tuxcomp.model import Project, Service, ServiceTuxComp
+from tuxcomp.postgres import is_postgres_service
 from tuxcomp.parser import ComposeError, parse_compose_file, interpolate, parse_duration
 from tuxcomp.planner import build_plan, down_plan, PlanError
 
@@ -132,6 +133,15 @@ def test_plan_raw_image_escape_hatch():
     mapped = plan.for_service("db")
     assert mapped[0].command[2] == "ubuntu"
     assert any(s.kind == "provision" for s in mapped)
+
+
+def test_service_user_passed_to_proot():
+    project = parse_compose_file(FIXTURES / "user.yml")
+    db = project.get("db")
+    assert db.user == "postgres"
+    plan = build_plan(project)
+    start = next(s for s in plan.for_service("db") if s.kind == "start")
+    assert start.command[:4] == ["proot-distro", "login", "-u", "postgres"]
 
 
 def test_plan_hosts_naming(simple: Project):
@@ -1957,3 +1967,32 @@ def test_parse_deploy_check(tmp_path):
         "https://a.test",
         "https://b.test",
     ]
+
+
+def test_postgres_service_installs_shm_shim():
+    """PostgreSQL containers get the proot SysV-shm shim before they start."""
+    project = parse_compose_file(FIXTURES / "postgres.yml")
+    plan = build_plan(project)
+    shim = [s for s in plan.for_service("db") if s.kind == "shim"]
+    assert len(shim) == 1
+    assert shim[0].command[:4] == ["proot-distro", "login", "shim-pg", "--"]
+    script = shim[0].command[-1]
+    assert "postgres.real" in script
+    assert "ashv_key" in script
+    assert plan.kinds().index("shim") < plan.kinds().index("start")
+
+
+def test_non_postgres_service_has_no_shm_shim(simple: Project):
+    assert not [s for s in build_plan(simple).steps if s.kind == "shim"]
+
+
+def test_postgres_detection_by_image_and_packages():
+    assert is_postgres_service(Service(name="db", image="postgres:18"))
+    assert is_postgres_service(
+        Service(
+            name="db",
+            image="ubuntu",
+            tuxcomp=ServiceTuxComp(packages=["postgresql"]),
+        )
+    )
+    assert not is_postgres_service(Service(name="web", image="nginx:alpine"))

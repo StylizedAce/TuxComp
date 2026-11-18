@@ -60,6 +60,27 @@ tuxcomp deploy -f docker-compose.yml
 
 `tuxcomp deploy` upgrades tuxcomp on the target, pushes your files, and starts the stack.
 
+Compose-standard `user:` is supported. TuxComp maps it to
+`proot-distro login -u <user>`, which is useful for services such as
+PostgreSQL that refuse to run as root. Use `command:`/a start script for
+such services; TuxComp starts containers as root by default.
+
+### PostgreSQL on Android
+
+TuxComp detects services whose image is `postgres*` (or whose
+`x-tuxcomp.packages` installs `postgresql`) and installs a small shim into the
+container before the service starts.
+
+Android has no System V shared memory; proot emulates it with
+`libandroid-shmem`, which deadlocks when PostgreSQL reuses a key after
+removing its segment. `initdb` does that while probing settings, and every
+server restart does it too. The shim short-circuits `postgres --check` and
+clears stale `ashv_key_*` links before real invocations. It is idempotent and
+survives PostgreSQL package upgrades.
+
+Then use a `command:`/start script that runs `initdb` and the server as the
+`postgres` user. The shim itself is installed as root before that drop.
+
 ## Commands
 
 | Command | Description |

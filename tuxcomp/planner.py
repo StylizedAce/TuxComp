@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from tuxcomp.model import Project, Service
+from tuxcomp.postgres import is_postgres_service, postgres_shim_command
 from tuxcomp.roles import recipe_for_image
 
 CLOUDFLARED_ARM64_URL = (
@@ -128,7 +129,10 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
         return service_start_command(project, service, container, detach=detach)
 
     def run_command(service: Service, container: str) -> list[str]:
-        cmd = ["proot-distro", "run", container]
+        cmd = ["proot-distro", "run"]
+        if service.user:
+            cmd += ["-u", service.user]
+        cmd.append(container)
         cmd += bind_args_with_notes(service)
         cmd += env_args(service)
         cmd += resource_env(service)
@@ -307,6 +311,22 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                 )
             )
 
+        if is_postgres_service(service):
+            steps.append(
+                Step(
+                    kind="shim",
+                    service=service.name,
+                    title=f"install PostgreSQL proot shm shim in {run_target}",
+                    command=postgres_shim_command(run_target),
+                    deps=[service.name],
+                    note=(
+                        "proot's SysV shm emulation deadlocks on PostgreSQL "
+                        "initdb/restart (libandroid-shmem#23); short-circuits "
+                        "`postgres --check` and clears stale ashv_key_* links"
+                    ),
+                )
+            )
+
         if service.entrypoint or service.command:
             start = Step(
                 kind="start",
@@ -453,7 +473,10 @@ def service_start_command(
     shell would leave it "running" while serving nothing.
     """
     if not service.entrypoint and not service.command:
-        cmd = ["proot-distro", "run", container]
+        cmd = ["proot-distro", "run"]
+        if service.user:
+            cmd += ["-u", service.user]
+        cmd.append(container)
         cmd += bind_args(project, service, volume_dirs_for(project))
         cmd += env_args(service)
         cmd += resource_env(service)
@@ -461,7 +484,10 @@ def service_start_command(
             cmd.append("-d")
         return cmd
 
-    cmd = ["proot-distro", "login", container]
+    cmd = ["proot-distro", "login"]
+    if service.user:
+        cmd += ["-u", service.user]
+    cmd.append(container)
     cmd += bind_args(project, service, volume_dirs_for(project))
     cmd += env_args(service)
     cmd += resource_env(service)

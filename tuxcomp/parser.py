@@ -314,6 +314,7 @@ def _parse_service(name: str, raw: dict, declared_volumes: dict[str, dict], sour
         container_name=str(raw["container_name"]) if raw.get("container_name") else None,
         command=_parse_command(raw.get("command")),
         entrypoint=_parse_command(raw.get("entrypoint")),
+        user=str(raw["user"]) if raw.get("user") else None,
         environment=env,
         env_file=env_file,
         ports=_parse_ports(raw.get("ports")),

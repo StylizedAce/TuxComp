@@ -1,0 +1,10 @@
+services:
+  db:
+    image: postgres:18
+    container_name: shim-pg
+    command: ["/bin/sh", "/start.sh"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
