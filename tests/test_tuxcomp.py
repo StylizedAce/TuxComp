@@ -189,6 +189,13 @@ def test_plan_cloudflared(monkeypatch):
     # The shared container has the fixed default name and a health step exists.
     assert any("tuxcomp-cloudflared" in s.title for s in plan.steps)
     assert any(s.kind == "health" and "cloudflared" in s.title for s in plan.steps)
+    # Active service names are registered in the tunnel container's hosts file.
+    tunnel_hosts = [
+        s for s in plan.steps if s.kind == "hosts" and "tuxcomp-cloudflared" in s.title
+    ]
+    assert len(tunnel_hosts) == 1
+    assert "relay" in tunnel_hosts[0].command[-1]
+    assert "wttg" in tunnel_hosts[0].command[-1]
     # Per-project container runs via proot (DNS works inside proot on Android)
     assert any("proot-distro" in s.command for s in tunnel)
     down = down_plan(project)
@@ -240,6 +247,8 @@ def test_tunnel_start_is_idempotent(monkeypatch):
     assert shell.index("exit 0") < shell.index("exec /usr/local/bin/cloudflared")
     # still starts the daemon normally
     assert "exec /usr/local/bin/cloudflared tunnel run --token-file /root/.tuxcomp/tunnel-token" in shell
+    # output is shell-redirected so `tuxcomp logs` works
+    assert ">> /var/log/tuxcomp/tuxcomp-cloudflared.log 2>&1" in shell
     # --logfile kills detached proot sessions - must never come back
     assert "--logfile" not in shell
 

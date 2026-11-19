@@ -211,6 +211,21 @@ x-tuxcomp:
     container: tuxcomp-cloudflared     # ensure this tunnel is up
 ```
 
+TuxComp registers every active service and container name in the cloudflared
+container’s `/etc/hosts` on each `up`. Cloudflare ingress targets can therefore
+use any of:
+
+```text
+http://localhost:8090
+http://127.0.0.1:8090
+http://[::1]:8090
+http://lt-api:8090
+```
+
+`tuxcomp logs tuxcomp-cloudflared` shows the tunnel log; it is written to
+`/var/log/tuxcomp/<container>.log` by the shell redirect. Token-based tunnels
+still get their hostname/ingress rules from the Cloudflare dashboard.
+
 **Plain port exposure** — most projects need nothing at all: expose a port and
 add a route in the Cloudflare dashboard (`lt.your-domain.com → localhost:8090`):
 

@@ -426,6 +426,19 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
         )
         steps.append(
             Step(
+                kind="hosts",
+                service="__tunnel__",
+                title=f"register service names in {tunnel_container} /etc/hosts",
+                command=_hosts_command(project, active, tunnel_container),
+                note=(
+                    "aliases every active service and container name to 127.0.0.1, "
+                    "so Cloudflare ingress targets can use "
+                    "http://<service>:<port> instead of only localhost"
+                ),
+            )
+        )
+        steps.append(
+            Step(
                 kind="tunnel",
                 service="__tunnel__",
                 title=f"start cloudflared daemon in {tunnel_container}",
@@ -433,7 +446,8 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
                 note=(
                     f"starts cloudflared daemon if it is not already running "
                     f"(idempotent - repeated deploys never stack duplicate connectors; "
-                    f"survives ssh close via proot -d); logs to the session - view with "
+                    f"survives ssh close via proot -d); logs at "
+                    f"/var/log/tuxcomp/{tunnel_container}.log - view with "
                     f"`tuxcomp logs {tunnel_container}`"
                     + (f"; tunnel: {cf.tunnel}" if cf.tunnel else "")
                 ),
@@ -748,14 +762,17 @@ def tunnel_start_command(container: str) -> list[str]:
     daemon, so this still brings the tunnel up on the new version.
 
     IMPORTANT: do NOT pass --logfile here. In detached proot sessions on
-    Termux, cloudflared exits immediately when asked to open a log file
-    (the redirect fails and the process dies in ~2s). Without --logfile it
-    survives and logs to the session (view via `tuxcomp logs <container>`).
+    Termux, cloudflared exits immediately when asked to open its own log file
+    (the redirect fails and the process dies in ~2s). A shell redirect is safe
+    and makes `tuxcomp logs <container>` work.
     """
+    log = f"/var/log/tuxcomp/{container}.log"
     shell = (
         f"if pgrep -f '^/usr/local/bin/cloudflared tunnel run' >/dev/null 2>&1; then "
         f"echo 'cloudflared already running - not starting a second one'; exit 0; fi; "
-        f"exec /usr/local/bin/cloudflared tunnel run --token-file /root/.tuxcomp/tunnel-token"
+        f"mkdir -p /var/log/tuxcomp && "
+        f"exec /usr/local/bin/cloudflared tunnel run --token-file /root/.tuxcomp/tunnel-token "
+        f">> {log} 2>&1"
     )
     return ["proot-distro", "login", container, "-d", "--", "/bin/sh", "-c", shell]
 
