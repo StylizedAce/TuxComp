@@ -439,6 +439,18 @@ def build_plan(project: Project, profiles: list[str] | None = None, detach: bool
         )
         steps.append(
             Step(
+                kind="hosts",
+                service="__tunnel__",
+                title=f"prefer IPv4 localhost in {tunnel_container}",
+                command=_localhost_ipv4_command(tunnel_container),
+                note=(
+                    "proot services normally bind 0.0.0.0 (IPv4); remove localhost "
+                    "from the ::1 /etc/hosts line so cloudflared does not dial [::1]"
+                ),
+            )
+        )
+        steps.append(
+            Step(
                 kind="tunnel",
                 service="__tunnel__",
                 title=f"start cloudflared daemon in {tunnel_container}",
@@ -742,6 +754,22 @@ def _tunnel_token_ensure_command(container: str, token: str | None) -> list[str]
             f"echo 'WARN: tunnel-token missing — deploy the owning project (with a token) first'"
         )
     return ["/bin/sh", "-c", shell]
+
+
+def _localhost_ipv4_command(container: str) -> list[str]:
+    """Make `localhost` resolve to 127.0.0.1 inside the tunnel container.
+
+    Most proot services bind ``0.0.0.0`` (IPv4 only). Debian's /etc/hosts also
+    lists ``localhost`` on the ``::1`` line, and cloudflared's Go resolver can
+    pick that address first and fail with connection refused on an IPv4-only
+    service. Removing ``localhost`` from the ``::1`` line makes all ingress
+    rules that use ``localhost:<port>`` work without per-service IPv6 binds.
+    """
+    shell = (
+        "sed -i -E 's/^::1[[:space:]]+.*/::1 ip6-localhost ip6-loopback/' /etc/hosts; "
+        "getent hosts localhost | head -1"
+    )
+    return ["proot-distro", "login", container, "--", "/bin/sh", "-c", shell]
 
 
 def tunnel_start_command(container: str) -> list[str]:

@@ -222,6 +222,11 @@ http://[::1]:8090
 http://lt-api:8090
 ```
 
+Inside the shared tunnel container, TuxComp normalizes `localhost` to
+**127.0.0.1** (removing it from the `::1` line in `/etc/hosts`). Proot services
+usually bind `0.0.0.0` (IPv4 only), so this prevents cloudflared from dialing
+`[::1]` and failing on a newly created IPv4-only container.
+
 `tuxcomp logs tuxcomp-cloudflared` shows the tunnel log; it is written to
 `/var/log/tuxcomp/<container>.log` by the shell redirect. Token-based tunnels
 still get their hostname/ingress rules from the Cloudflare dashboard.

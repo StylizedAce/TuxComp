@@ -191,11 +191,22 @@ def test_plan_cloudflared(monkeypatch):
     assert any(s.kind == "health" and "cloudflared" in s.title for s in plan.steps)
     # Active service names are registered in the tunnel container's hosts file.
     tunnel_hosts = [
-        s for s in plan.steps if s.kind == "hosts" and "tuxcomp-cloudflared" in s.title
+        s
+        for s in plan.steps
+        if s.kind == "hosts"
+        and s.title.startswith("register service names")
+        and "tuxcomp-cloudflared" in s.title
     ]
     assert len(tunnel_hosts) == 1
     assert "relay" in tunnel_hosts[0].command[-1]
     assert "wttg" in tunnel_hosts[0].command[-1]
+    # localhost must resolve to IPv4 for IPv4-only proot services
+    localhost_ipv4 = [
+        s for s in plan.steps if s.kind == "hosts" and "IPv4 localhost" in s.title
+    ]
+    assert len(localhost_ipv4) == 1
+    assert "sed -i" in localhost_ipv4[0].command[-1]
+    assert "::1 ip6-localhost ip6-loopback" in localhost_ipv4[0].command[-1]
     # Per-project container runs via proot (DNS works inside proot on Android)
     assert any("proot-distro" in s.command for s in tunnel)
     down = down_plan(project)
